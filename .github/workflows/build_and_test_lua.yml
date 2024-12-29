@@ -13,15 +13,45 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout tidesdb-lua repo
+      uses: actions/checkout@v4
+      with:
+        repository: tidesdb/tidesdb-lua
+        path: tidesdb-lua
+
     - name: Checkout tidesdb repo
       uses: actions/checkout@v4
       with:
-        repository: https://github.com/tidesdb/tidesdb-lua.git
+        repository: tidesdb/tidesdb
         path: tidesdb
+
+    - name: Install libzstd-dev,liblz4-dev and libsnappy-dev
+      run: |
+        sudo apt update
+        sudo apt install -y libzstd-dev liblz4-dev libsnappy-dev
+
+    - name: configure cmake build for tidesdb
+      run: | 
+        cd tidesdb
+        cmake --debug-output  -S . -B build && make -C build/
+
+
+    - name: Install Lua and Lua development files
+      run: |
+        sudo apt update
+        sudo apt install -y lua5.3 liblua5.3-dev
+
     - name: configure cmake build
-      run: ./cmake -S . -B build
-    - name: make
-      run: cd build && make
+      run: |
+        cd tidesdb-lua
+        cmake --debug-output  -S . -B build && make -C build/
+
+    - name: cleanup resources
+      run: rm -rf /tmp/my_db
+
     - name: run lua tests
-      run: lua ../test_lua.lua
+      run: |
+        export ASAN_OPTIONS=verify_asan_link_order=0
+        cd tidesdb-lua/build
+        lua ../test_lua.lua
+
