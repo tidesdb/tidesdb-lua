@@ -115,8 +115,8 @@ static int get(lua_State *L)
     const char* column_family = luaL_checkstring(L, 1);
     const uint8_t* key = (uint8_t*)luaL_checkstring(L, 2);
     const size_t key_size = (size_t)luaL_len(L, 2);
-    uint8_t* value = (uint8_t*)luaL_checkstring(L, 3);
-    size_t value_size = (size_t)luaL_len(L, 3);
+    uint8_t* value = NULL;
+    size_t value_size = 0;
     tidesdb_err_t *ret = tidesdb_get(db,
                                      column_family,
                                      key,

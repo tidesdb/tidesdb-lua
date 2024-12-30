@@ -63,7 +63,7 @@ function test_put_and_get()
         code, message = db.put(name, key, value, ttl)
         assert(code == 0, message)
 
-        code, message, got_value = db.get(name, key, value)
+        code, message, got_value = db.get(name, key)
         assert(code == 0, message)
         assert(got_value == value, "value mistmach!")
 
