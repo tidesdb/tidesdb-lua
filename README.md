@@ -22,7 +22,6 @@ local db = require("libtidesdb_lua")
 
 -- Open a TidesDB database
 local code, message = db.open("my_db")
-db = TidesDB.open('my_db')
 --assert error codes for failures
 assert(code == 0, message)
 
