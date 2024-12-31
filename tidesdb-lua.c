@@ -138,6 +138,24 @@ static int delete(lua_State *L)
     LUA_RET_CODE()
 }
 
+static int compact_sstables(lua_State *L)
+{
+    const char* column_family = luaL_checkstring(L, 1);
+    const int max_threads = (uint32_t)luaL_checkinteger(L, 2);
+    tidesdb_err_t *ret = tidesdb_compact_sstables(db,
+                                        column_family,
+                                        max_threads);
+    LUA_RET_CODE()
+}
+
+static int list_column_families(lua_State *L)
+{
+    const char* list = tidesdb_list_column_families(db);
+    lua_pushstring(L, list);
+    return 1;
+}
+
+
 static const luaL_Reg regs_tidesdb_lua[] = {
     {"open", db_open},
     {"close", db_close},
@@ -146,6 +164,8 @@ static const luaL_Reg regs_tidesdb_lua[] = {
     {"put", put},
     {"get", get},
     {"delete", delete},
+    {"compact_sstables", compact_sstables},
+    {"list_column_families", list_column_families},
     {NULL, NULL}
 };
 
