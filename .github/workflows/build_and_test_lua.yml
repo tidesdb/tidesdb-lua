@@ -31,9 +31,9 @@ jobs:
         sudo apt install -y libzstd-dev liblz4-dev libsnappy-dev
 
     - name: configure cmake build for tidesdb
-      run: | 
+      run: |
         cd tidesdb
-        cmake --debug-output  -S . -B build && make -C build/
+        cmake -DTIDESDB_WITH_SANITIZER=OFF --debug-output  -S . -B build && make -C build/
 
 
     - name: Install Lua and Lua development files
@@ -51,7 +51,6 @@ jobs:
 
     - name: run lua tests
       run: |
-        export ASAN_OPTIONS=verify_asan_link_order=0
         cd tidesdb-lua/build
         lua ../test_lua.lua
 
