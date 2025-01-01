@@ -1,5 +1,8 @@
 # tidesdb-lua
 Official Lua binding for TidesDB
+
+[![Linux Build Status](https://github.com/tidesdb/tidesdb-lua/actions/workflows/build_and_test_lua.yml/badge.svg)](https://github.com/tidesdb/tidesdb-lua/actions/workflows/build_and_test_lua.yml)
+
 #### Setup
 
 This is a Lua wrapper library for TidesDB therefore first you need
