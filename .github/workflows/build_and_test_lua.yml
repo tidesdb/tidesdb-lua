@@ -34,6 +34,7 @@ jobs:
       run: |
         cd tidesdb
         cmake -DTIDESDB_WITH_SANITIZER=OFF --debug-output  -S . -B build && make -C build/
+        sudo cmake --install build
 
 
     - name: Install Lua and Lua development files
