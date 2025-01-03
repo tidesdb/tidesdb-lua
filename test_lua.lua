@@ -153,7 +153,8 @@ function test_list_column_families()
                                                 db_data_struct)
         assert(code == 0, message)
 
-        list = db.list_column_families()
+        code, message, list = db.list_column_families()
+        assert(code == 0, message)
         assert(list == "one\ntwo\n")
 
         code, message = db.drop_column_family("one")
