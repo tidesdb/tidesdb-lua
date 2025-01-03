@@ -31,6 +31,7 @@ static tidesdb_t *db = NULL;
     {                                      \
         lua_pushinteger(L, ret->code);     \
         lua_pushstring(L, ret->message);   \
+        tidesdb_err_free(ret);             \
         return 2;                          \
     } else {                               \
         lua_pushinteger(L, 0);             \
@@ -43,11 +44,13 @@ static tidesdb_t *db = NULL;
     {                                                  \
         lua_pushinteger(L, ret->code);                 \
         lua_pushstring(L, ret->message);               \
+        tidesdb_err_free(ret);                         \
         return 2;                                      \
     } else {                                           \
         lua_pushinteger(L, 0);                         \
         lua_pushstring(L, "OK");                       \
         lua_pushlstring(L, _value, value_size);        \
+        free(_value);                                  \
         return 3;                                      \
     }                                                  \
 
@@ -150,9 +153,9 @@ static int compact_sstables(lua_State *L)
 
 static int list_column_families(lua_State *L)
 {
-    const char* list = tidesdb_list_column_families(db);
-    lua_pushstring(L, list);
-    return 1;
+    char* list = NULL;
+    tidesdb_err_t *ret = tidesdb_list_column_families(db, &list);
+    LUA_RET_CODE_AND_VALUE(list, strlen(list));
 }
 
 
