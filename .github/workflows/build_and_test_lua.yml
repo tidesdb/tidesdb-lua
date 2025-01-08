@@ -40,15 +40,18 @@ jobs:
     - name: Install Lua and Lua development files
       run: |
         sudo apt update
-        sudo apt install -y lua5.3 liblua5.3-dev
+        sudo apt install -y lua5.3 liblua5.3-dev lua-busted
 
     - name: configure cmake build
       run: |
         cd tidesdb-lua
         cmake --debug-output  -S . -B build && make -C build/
 
-    - name: cleanup resources
-      run: rm -rf /tmp/my_db
+    - name: Run Busted
+      run: |
+        cd tidesdb-lua
+        busted .
+    
 
     - name: run lua tests
       run: |
