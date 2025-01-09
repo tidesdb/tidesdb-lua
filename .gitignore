@@ -42,3 +42,8 @@ luac.out
 #cmake build artifacts
 build
 
+cmake-build-debug
+.idea
+build
+.vscode
+

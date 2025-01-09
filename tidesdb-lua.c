@@ -1,6 +1,6 @@
 /*
  *
- * Copyright (C) Evgeny Kornev
+ * Copyright (C) TidesDB
  *
  * Original Author: Evgeny Kornev
  *
@@ -16,13 +16,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
 #include <stdio.h>
 #include <string.h>
-#include <tidesdb.h>
+#include <tidesdb/tidesdb.h>
 
 #define LUA_RET_CODE()                     \
     if(ret)                                \
