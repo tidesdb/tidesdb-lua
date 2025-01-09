@@ -8,6 +8,8 @@ add_compile_options(-Wextra -Wall)
 # set CMP0156 policy
 cmake_policy(SET CMP0156 NEW)
 
+find_library(LIBRARY_TIDEDB NAMES tidesdb REQUIRED) # require tidesdb library
+
 find_package(Lua 5.3 REQUIRED)
 
 add_library(tidesdb_lua SHARED tidesdb-lua.c)
