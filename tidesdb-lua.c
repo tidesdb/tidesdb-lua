@@ -21,7 +21,7 @@
 #include <lualib.h>
 #include <stdio.h>
 #include <string.h>
-#include <tidesdb.h>
+#include <tidesdb/tidesdb.h>
 
 #define LUA_RET_CODE()                     \
     if(ret)                                \
