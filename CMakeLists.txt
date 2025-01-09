@@ -9,8 +9,7 @@ add_compile_options(-Wextra -Wall)
 cmake_policy(SET CMP0156 NEW)
 
 find_package(Lua 5.3 REQUIRED)
-find_package(tidesdb REQUIRED)
 
 add_library(tidesdb_lua SHARED tidesdb-lua.c)
-target_include_directories(tidesdb_lua PRIVATE ${LUA_INCLUDE_DIR} ${tidesdb_INCLUDE_DIRS})
-target_link_libraries(tidesdb_lua ${tidesdb_LIBRARIES} ${LUA_LIBRARIES})
+target_include_directories(tidesdb_lua PRIVATE ${LUA_INCLUDE_DIR})
+target_link_libraries(tidesdb_lua ${LUA_LIBRARIES} tidesdb)
