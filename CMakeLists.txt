@@ -12,6 +12,6 @@ find_library(LIBRARY_TIDEDB NAMES tidesdb REQUIRED) # require tidesdb library
 
 find_package(Lua 5.3 REQUIRED)
 
-add_library(tidesdb_lua SHARED tidesdb-lua.c)
+add_library(tidesdb_lua SHARED src/tidesdb-lua.c)
 target_include_directories(tidesdb_lua PRIVATE ${LUA_INCLUDE_DIR})
 target_link_libraries(tidesdb_lua ${LUA_LIBRARIES} tidesdb)
