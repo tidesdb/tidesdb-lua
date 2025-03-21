@@ -37,7 +37,6 @@ code, message = db.create_column_family(
     true,            -- Enable compression
     db.COMPRESS_SNAPPY, -- Compression algorithm can be NO_COMPRESSION, COMPRESS_SNAPPY, COMPRESS_LZ4, COMPRESS_ZSTD
     true,               -- Enable bloom filter
-    db.TDB_MEMTABLE_SKIP_LIST, -- Use skip list for memtable
 )
 
 -- Put key-value pair into the database

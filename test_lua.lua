@@ -29,7 +29,6 @@ local prob_skip_list = 0.24
 local enable_compression = true
 local compression_algo = lib.COMPRESS_SNAPPY
 local enable_bloom_filter = true
-local db_data_struct = lib.TDB_MEMTABLE_SKIP_LIST
 
 local key = "key"
 local key_size = string.len(key)
@@ -54,8 +53,7 @@ function test_create_and_drop_column()
                                                 prob_skip_list,
                                                 enable_compression,
                                                 compression_algo,
-                                                enable_bloom_filter,
-                                                db_data_struct)
+                                                enable_bloom_filter)
         assert(code == 0, message)
 
         code, message = db:drop_column_family(name)
@@ -75,8 +73,7 @@ function test_put_and_get()
                                                 prob_skip_list,
                                                 enable_compression,
                                                 compression_algo,
-                                                enable_bloom_filter,
-                                                db_data_struct)
+                                                enable_bloom_filter)
         assert(code == 0, message)
 
         code, message = db:put(name, key, value, ttl)
@@ -103,8 +100,7 @@ function test_put_and_delete()
                                                 prob_skip_list,
                                                 enable_compression,
                                                 compression_algo,
-                                                enable_bloom_filter,
-                                                db_data_struct)
+                                                enable_bloom_filter)
         assert(code == 0, message)
 
         code, message = db:put(name, key, value, ttl)
@@ -130,8 +126,7 @@ function test_put_and_compact()
                                                 prob_skip_list,
                                                 enable_compression,
                                                 compression_algo,
-                                                enable_bloom_filter,
-                                                db_data_struct)
+                                                enable_bloom_filter)
         assert(code == 0, message)
 
         for i=1,20 do
@@ -158,8 +153,7 @@ function test_list_column_families()
                                                 prob_skip_list,
                                                 enable_compression,
                                                 compression_algo,
-                                                enable_bloom_filter,
-                                                db_data_struct)
+                                                enable_bloom_filter)
         assert(code == 0, message)
         assert(code == 0, message)
 
@@ -185,8 +179,7 @@ function test_txn_begin_and_free()
                                                 prob_skip_list,
                                                 enable_compression,
                                                 compression_algo,
-                                                enable_bloom_filter,
-                                                db_data_struct)
+                                                enable_bloom_filter)
         assert(code == 0, message)
 
         code, message, txn = lib.txn_begin(db, name)
@@ -211,8 +204,7 @@ function test_txn_put_and_delete()
                                                 prob_skip_list,
                                                 enable_compression,
                                                 compression_algo,
-                                                enable_bloom_filter,
-                                                db_data_struct)
+                                                enable_bloom_filter)
         assert(code == 0, message)
 
         code, message, txn = lib.txn_begin(db, name)

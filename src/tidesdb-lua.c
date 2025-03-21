@@ -141,10 +141,10 @@ static int create_column_family(lua_State *L)
     const tidesdb_compression_algo_t compression_algo =
         (tidesdb_compression_algo_t)luaL_checkinteger(L, 7);
     const bool enable_bloom_filter = lua_toboolean(L, 8);
-    const tidesdb_memtable_ds_t db_data_struct = (tidesdb_memtable_ds_t)luaL_checkinteger(L, 9);
+   
     tidesdb_err_t *ret = tidesdb_create_column_family(
         db, column_family, flush_threshold, max_skip_level, prob_skip_level, enable_compression,
-        compression_algo, enable_bloom_filter, db_data_struct);
+        compression_algo, enable_bloom_filter);
     LUA_RET_CODE()
 }
 static int drop_column_family(lua_State *L)

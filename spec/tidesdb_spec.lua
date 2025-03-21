@@ -37,7 +37,6 @@ local prob_skip_list = 0.24
 local enable_compression = true
 local compression_algo = lib.COMPRESS_SNAPPY
 local enable_bloom_filter = true
-local db_data_struct = lib.TDB_MEMTABLE_SKIP_LIST
 
 local key = "key"
 local key_size = string.len(key)
@@ -70,8 +69,7 @@ describe("create and drop column", function()
                                             prob_skip_list,
                                             enable_compression,
                                             compression_algo,
-                                            enable_bloom_filter,
-                                            db_data_struct)
+                                            enable_bloom_filter)
     assert.is_equal(0, code)
 
     code, message = db:drop_column_family(name)
@@ -95,8 +93,7 @@ describe("put and get", function()
                                             prob_skip_list,
                                             enable_compression,
                                             compression_algo,
-                                            enable_bloom_filter,
-                                            db_data_struct)
+                                            enable_bloom_filter)
     assert.is_equal(0, code)
 
     code, message = db:put(name, key, value, ttl)
@@ -127,8 +124,7 @@ describe("put and delete", function()
                                             prob_skip_list,
                                             enable_compression,
                                             compression_algo,
-                                            enable_bloom_filter,
-                                            db_data_struct)
+                                            enable_bloom_filter)
     assert.is_equal(0, code)
 
     code, message = db:put(name, key, value, ttl)
@@ -158,8 +154,7 @@ describe("list column families", function()
                                             prob_skip_list,
                                             enable_compression,
                                             compression_algo,
-                                            enable_bloom_filter,
-                                            db_data_struct)
+                                            enable_bloom_filter)
     assert.is_equal(0, code)
 
     code, message, list = db:list_column_families()
@@ -186,8 +181,7 @@ describe("transactions begin and free", function()
                                             prob_skip_list,
                                             enable_compression,
                                             compression_algo,
-                                            enable_bloom_filter,
-                                            db_data_struct)
+                                            enable_bloom_filter)
     assert.is_equal(0, code)
 
     code, message, txn = lib.txn_begin(db, name)
@@ -217,8 +211,7 @@ describe("transactions put and delete", function()
                                             prob_skip_list,
                                             enable_compression,
                                             compression_algo,
-                                            enable_bloom_filter,
-                                            db_data_struct)
+                                            enable_bloom_filter)
     assert.is_equal(0, code)
 
     code, message, txn = lib.txn_begin(db, name)
