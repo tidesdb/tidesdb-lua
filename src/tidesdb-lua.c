@@ -61,7 +61,7 @@ static int create_column_family(lua_State *L);
 static int drop_column_family(lua_State *L);
 static int put(lua_State *L);
 static int get(lua_State *L);
-static int delete(lua_State *L);
+static int delete (lua_State *L);
 static int list_column_families(lua_State *L);
 static int compact_sstables(lua_State *L);
 
@@ -185,7 +185,7 @@ static int get(lua_State *L)
     LUA_RET_CODE_AND_VALUE((char *)value, value_size)
 }
 
-static int delete(lua_State *L)
+static int delete (lua_State *L)
 {
     lua_getfield(L, 1, "self_db");
     tidesdb_t *db = lua_touserdata(L, -1);
