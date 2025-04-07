@@ -10,26 +10,35 @@ a copy of TidesDB
 
 ```bash
 git clone https://github.com/tidesdb/tidesdb.git
+
+```
+Build it and install
+```bash
+cd tidesdb
+cmake -DTIDESDB_WITH_SANITIZER=OFF -S . -B build && make -C build/
+sudo cmake --install build
+```
+
+Build Lua library
+```bash
 git clone https://github.com/tidesdb/tidesdb-lua.git
 cd tidesdb-lua
-cmake --debug-output  -S . -B build
-cd build
-make
+cmake -S . -B build && make -C build/
 ```
 As a result libtidesdb_lua.so library is built
 #### Basic operations
 
 ```lua
 -- Open lua wrapper library
-local db = require("libtidesdb_lua")
+local lib = require("libtidesdb_lua")
 
 -- Open a TidesDB database
-local code, message = db.open("my_db")
+local code, message, db = lib.open("my_db")
 --assert error codes for failures
 assert(code == 0, message)
 
 -- Create a column family
-code, message = db.create_column_family(
+code, message = db:create_column_family(
     "my_column_family", 
     1024*1024*64,    -- Flush threshold (64MB)
     12,              -- Max level skip list, if using hash table is irrelevant
@@ -40,16 +49,16 @@ code, message = db.create_column_family(
 )
 
 -- Put key-value pair into the database
-code, message = db.put("my_column_family", "key", "value", 3600)
+code, message = db:put("my_column_family", "key", "value", 3600)
 
 -- Get the value for the key
-code, message, value = db.get("my_column_family", "key")
+code, message, value = db:get("my_column_family", "key")
 
 -- Delete the key-value pair
-db.delete("my_column_family", "key")
+db:delete("my_column_family", "key")
 
 --- Close the database
-db.close()
+lib.close(db)
 ```
 
 #### Test lua wrapper-library
