@@ -57,12 +57,26 @@ code, message, value = db:get("my_column_family", "key")
 -- Delete the key-value pair
 db:delete("my_column_family", "key")
 
+-- Create a cursor for iterating over key-value pairs
+code, message, cursor = db:cursor_init("my_column_family")
+assert(code == 0, message)
+
+-- Move cursor to next key-value pair
+code, message = cursor:next()
+assert(code == 0, message)
+
+-- Get current key-value pair
+code, message, value = cursor:get()
+assert(code == 0, message)
+
+-- Move cursor to previous key-value pair
+code, message = cursor:prev()
+assert(code == 0, message)
+
+-- Free cursor when done
+code, message = cursor:free()
+assert(code == 0, message)
+
 --- Close the database
 lib.close(db)
-```
-
-#### Test lua wrapper-library
-```bash
-cd build
-lua ../test_lua.lua
 ```
