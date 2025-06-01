@@ -44,6 +44,17 @@ local value = "value"
 local value_size = string.len(value)
 local ttl = 10
 
+-- Setup test directory
+os.execute("rm -rf " .. directory)
+os.execute("mkdir -p " .. directory)
+os.execute("chmod 777 " .. directory)
+
+describe("load", function()
+  it("should open tidesdb_lua", function()
+    assert.truthy(require("libtidesdb_lua"))
+  end)
+end)
+
 describe("open and close", function()
   it("should open and close db", function()
     assert.truthy(lib.open(directory))
@@ -224,6 +235,72 @@ describe("transactions put and delete", function()
     assert.is_equal(0, code)
 
     code, message = txn:free()
+    assert.is_equal(0, code)
+
+    code, message = db:drop_column_family(name)
+    assert.is_equal(0, code)
+
+    local code, message, db = lib.close(db)
+    assert.is_equal(0, code)
+  end)
+end)
+
+describe("cursor operations", function()
+  it("should perform cursor operations", function()
+    assert.truthy(lib.open(directory))
+
+    local code, message, db = lib.open(directory)
+    assert.is_equal(0, code)
+
+    code, message = db:create_column_family(name,
+                                            threshold,
+                                            max_skip_list,
+                                            prob_skip_list,
+                                            enable_compression,
+                                            compression_algo,
+                                            enable_bloom_filter)
+    assert.is_equal(0, code)
+
+    -- Insert test data
+    for i=1,5 do
+      code, message = db:put(name, "key" .. i, "value" .. i, ttl)
+      assert.is_equal(0, code)
+    end
+
+    -- Create cursor
+    code, message, cursor = db:cursor_init(name)
+    assert.is_equal(0, code)
+
+    -- Test next operations
+    for i=1,5 do
+      code, message, key, value = cursor:get()
+      assert.is_equal(0, code)
+      assert.is_equal(key, "key" .. i)
+      assert.is_equal(value, "value" .. i)
+      code, message = cursor:next()
+      if i ~= 5 then
+        assert.is_equal(0, code)
+      end
+    end
+
+    -- Position cursor at last element
+    code, message = cursor:prev()
+    assert.is_equal(0, code)
+
+    -- Test prev operations
+    for i=5,1,-1 do
+      code, message, key, value = cursor:get()
+      assert.is_equal(0, code)
+      assert.is_equal(key, "key" .. i)
+      assert.is_equal(value, "value" .. i)
+      code, message = cursor:prev()
+      if i ~= 1 then
+        assert.is_equal(0, code)
+      end
+    end
+
+    -- Free cursor
+    code, message = cursor:free()
     assert.is_equal(0, code)
 
     code, message = db:drop_column_family(name)

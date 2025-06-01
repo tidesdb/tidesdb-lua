@@ -72,10 +72,14 @@ static int txn_commit(lua_State *L);
 static int txn_rollback(lua_State *L);
 static int txn_free(lua_State *L);
 
+static int cursor_init(lua_State *L);
+static int cursor_next(lua_State *L);
+static int cursor_prev(lua_State *L);
+static int cursor_get(lua_State *L);
+static int cursor_free(lua_State *L);
+
 static const luaL_Reg regs_tidesdb_lib_lua[] = {
-    {"open", db_open},
-    {"close", db_close},
-    {"txn_begin", txn_begin},
+    {"open", db_open}, {"close", db_close}, {"txn_begin", txn_begin}, {"cursor_init", cursor_init},
     {NULL, NULL},
 };
 
@@ -88,12 +92,18 @@ static const luaL_Reg regs_tidesdb_lua[] = {
     {"compact_sstables", compact_sstables},
     {"list_column_families", list_column_families},
     {"txn_begin", txn_begin},
+    {"cursor_init", cursor_init},
     {NULL, NULL},
 };
 
 static const luaL_Reg regs_tidesdb_txn_lua[] = {
     {"put", txn_put},           {"delete", txn_delete}, {"commit", txn_commit},
     {"rollback", txn_rollback}, {"free", txn_free},     {NULL, NULL},
+};
+
+static const luaL_Reg regs_tidesdb_curs_lua[] = {
+    {"next", cursor_next}, {"prev", cursor_prev}, {"get", cursor_get},
+    {"free", cursor_free}, {NULL, NULL},
 };
 
 static int db_open(lua_State *L)
@@ -290,6 +300,87 @@ static int txn_free(lua_State *L)
     lua_getfield(L, -1, "self_txn");
     tidesdb_txn_t *txn = lua_touserdata(L, -1);
     tidesdb_err_t *ret = tidesdb_txn_free(txn);
+    LUA_RET_CODE()
+}
+
+static int cursor_init(lua_State *L)
+{
+    lua_getfield(L, 1, "self_db");
+    tidesdb_t *db = lua_touserdata(L, -1);
+    const char *column_family = luaL_checkstring(L, 2);
+    tidesdb_cursor_t *curs = NULL;
+
+    tidesdb_err_t *ret = tidesdb_cursor_init(db, column_family, &curs);
+    if (ret)
+    {
+        lua_pushinteger(L, ret->code);
+        lua_pushstring(L, ret->message);
+        tidesdb_err_free(ret);
+        return 2;
+    }
+    else
+    {
+        lua_pushinteger(L, 0);
+        lua_pushstring(L, "OK");
+
+        lua_newtable(L);
+        luaL_setfuncs(L, regs_tidesdb_curs_lua, 0);
+        lua_pushlightuserdata(L, curs);
+        lua_setfield(L, -2, "self_curs");
+        return 3;
+    }
+}
+
+static int cursor_next(lua_State *L)
+{
+    lua_getfield(L, 1, "self_curs");
+    tidesdb_cursor_t *curs = lua_touserdata(L, -1);
+    tidesdb_err_t *ret = tidesdb_cursor_next(curs);
+    LUA_RET_CODE()
+}
+
+static int cursor_prev(lua_State *L)
+{
+    lua_getfield(L, 1, "self_curs");
+    tidesdb_cursor_t *curs = lua_touserdata(L, -1);
+    tidesdb_err_t *ret = tidesdb_cursor_prev(curs);
+    LUA_RET_CODE()
+}
+
+static int cursor_get(lua_State *L)
+{
+    lua_getfield(L, 1, "self_curs");
+    tidesdb_cursor_t *curs = lua_touserdata(L, -1);
+    uint8_t *key = NULL;
+    size_t key_size = 0;
+    uint8_t *value = NULL;
+    size_t value_size = 0;
+
+    tidesdb_err_t *ret = tidesdb_cursor_get(curs, &key, &key_size, &value, &value_size);
+    if (ret)
+    {
+        lua_pushinteger(L, ret->code);
+        lua_pushstring(L, ret->message);
+        tidesdb_err_free(ret);
+        return 2;
+    }
+    else
+    {
+        lua_pushinteger(L, 0);
+        lua_pushstring(L, "OK");
+        lua_pushlstring(L, (char *)key, key_size);
+        lua_pushlstring(L, (char *)value, value_size);
+        free(key);
+        free(value);
+        return 4;
+    }
+}
+
+static int cursor_free(lua_State *L)
+{
+    lua_getfield(L, 1, "self_curs");
+    tidesdb_cursor_t *curs = lua_touserdata(L, -1);
+    tidesdb_err_t *ret = tidesdb_cursor_free(curs);
     LUA_RET_CODE()
 }
 
