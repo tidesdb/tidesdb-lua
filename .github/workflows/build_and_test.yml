@@ -1,0 +1,37 @@
+name: Build and Test TidesDB Lua
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install LuaJIT
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y luajit libluajit-5.1-dev
+    
+    - name: Install TidesDB dependencies
+      run: |
+        sudo apt-get install -y cmake build-essential
+    
+    - name: Build and install TidesDB
+      run: |
+        git clone https://github.com/tidesdb/tidesdb.git
+        cd tidesdb
+        cmake -S . -B build
+        cmake --build build
+        sudo cmake --install build
+        sudo ldconfig
+    
+    - name: Run tests
+      run: |
+        cd tests
+        luajit test_tidesdb.lua

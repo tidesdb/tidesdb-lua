@@ -1,82 +1,38 @@
 # tidesdb-lua
-Official Lua binding for TidesDB
 
-[![Linux Build Status](https://github.com/tidesdb/tidesdb-lua/actions/workflows/build_and_test_lua.yml/badge.svg)](https://github.com/tidesdb/tidesdb-lua/actions/workflows/build_and_test_lua.yml)
+tidesdb-lua is the official Lua binding for TidesDB.
 
-#### Setup
+TidesDB is a fast and efficient key-value storage engine library written in C. The underlying data structure is based on a log-structured merge-tree (LSM-tree). This Lua binding provides a safe, idiomatic Lua interface to TidesDB with full support for all features.
 
-This is a Lua wrapper library for TidesDB therefore first you need
-a copy of TidesDB
+## Features
 
-```bash
-git clone https://github.com/tidesdb/tidesdb.git
+- MVCC with five isolation levels from READ UNCOMMITTED to SERIALIZABLE
+- Column families (isolated key-value stores with independent configuration)
+- Bidirectional iterators with forward/backward traversal and seek support
+- TTL (time to live) support with automatic key expiration
+- LZ4, LZ4 Fast, ZSTD, Snappy, or no compression
+- Bloom filters with configurable false positive rates
+- Global block CLOCK cache for hot blocks
+- Savepoints for partial transaction rollback
+- Six built-in comparators plus custom registration
 
-```
-Build it and install
-```bash
-cd tidesdb
-cmake -DTIDESDB_WITH_SANITIZER=OFF -S . -B build && make -C build/
-sudo cmake --install build
-```
+For Lua usage you can go to the TidesDB Lua Reference [here](https://tidesdb.com/reference/lua/).
 
-Build Lua library
-```bash
-git clone https://github.com/tidesdb/tidesdb-lua.git
-cd tidesdb-lua
-cmake -S . -B build && make -C build/
-```
-As a result libtidesdb_lua.so library is built
-#### Basic operations
+## License
 
-```lua
--- Open lua wrapper library
-local lib = require("libtidesdb_lua")
+Multiple licenses apply:
 
--- Open a TidesDB database
-local code, message, db = lib.open("my_db")
---assert error codes for failures
-assert(code == 0, message)
+- Mozilla Public License Version 2.0 (TidesDB)
+- BSD 3-Clause (Snappy)
+- BSD 2-Clause (LZ4)
+- BSD 2-Clause (xxHash - Yann Collet)
+- BSD (Zstandard)
 
--- Create a column family
-code, message = db:create_column_family(
-    "my_column_family", 
-    1024*1024*64,    -- Flush threshold (64MB)
-    12,              -- Max level skip list, if using hash table is irrelevant
-    0.24,            -- Probability skip list, if using hash table is irrelevant
-    true,            -- Enable compression
-    db.COMPRESS_SNAPPY, -- Compression algorithm can be NO_COMPRESSION, COMPRESS_SNAPPY, COMPRESS_LZ4, COMPRESS_ZSTD
-    true,               -- Enable bloom filter
-)
+## Contributing
 
--- Put key-value pair into the database
-code, message = db:put("my_column_family", "key", "value", 3600)
+Contributions are welcome! Please feel free to submit a Pull Request.
 
--- Get the value for the key
-code, message, value = db:get("my_column_family", "key")
+## Support
 
--- Delete the key-value pair
-db:delete("my_column_family", "key")
-
--- Create a cursor for iterating over key-value pairs
-code, message, cursor = db:cursor_init("my_column_family")
-assert(code == 0, message)
-
--- Move cursor to next key-value pair
-code, message = cursor:next()
-assert(code == 0, message)
-
--- Get current key-value pair
-code, message, value = cursor:get()
-assert(code == 0, message)
-
--- Move cursor to previous key-value pair
-code, message = cursor:prev()
-assert(code == 0, message)
-
--- Free cursor when done
-code, message = cursor:free()
-assert(code == 0, message)
-
---- Close the database
-lib.close(db)
-```
+- [Discord](https://discord.gg/tWEmjR66cy)
+- [GitHub Issues](https://github.com/tidesdb/tidesdb-lua/issues)
