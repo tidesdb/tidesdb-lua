@@ -156,19 +156,22 @@ jobs:
       - name: Run Lua tests (Linux)
         if: runner.os == 'Linux'
         run: |
-          cd tidesdb-lua/tests
-          luajit test_tidesdb.lua
+          cd tidesdb-lua
+          export LUA_PATH="./src/?.lua;./src/?/init.lua;;"
+          luajit tests/test_tidesdb.lua
 
       - name: Run Lua tests (macOS)
         if: runner.os == 'macOS'
         run: |
-          cd tidesdb-lua/tests
-          luajit test_tidesdb.lua
+          cd tidesdb-lua
+          export LUA_PATH="./src/?.lua;./src/?/init.lua;;"
+          luajit tests/test_tidesdb.lua
 
       - name: Run Lua tests (Windows)
         if: runner.os == 'Windows'
         shell: msys2 {0}
         run: |
           export PATH="/mingw64/bin:/mingw64/lib:$PATH"
-          cd tidesdb-lua/tests
-          luajit test_tidesdb.lua
+          cd tidesdb-lua
+          export LUA_PATH="./src/?.lua;./src/?/init.lua;;"
+          luajit tests/test_tidesdb.lua
