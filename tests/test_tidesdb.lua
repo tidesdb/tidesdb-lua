@@ -268,6 +268,13 @@ function tests.test_stats()
     local stats = cf:get_stats()
     assert_true(stats.num_levels >= 0, "num_levels should be >= 0")
     assert_true(stats.memtable_size >= 0, "memtable_size should be >= 0")
+    -- Test new stats fields
+    assert_true(stats.total_keys ~= nil, "total_keys should exist")
+    assert_true(stats.total_data_size ~= nil, "total_data_size should exist")
+    assert_true(stats.avg_key_size ~= nil, "avg_key_size should exist")
+    assert_true(stats.avg_value_size ~= nil, "avg_value_size should exist")
+    assert_true(stats.read_amp ~= nil, "read_amp should exist")
+    assert_true(stats.hit_rate ~= nil, "hit_rate should exist")
     
     -- Get cache stats
     local cache_stats = db:get_cache_stats()
@@ -277,6 +284,123 @@ function tests.test_stats()
     db:close()
     cleanup_db(path)
     print("PASS: test_stats")
+end
+
+function tests.test_rename_column_family()
+    local path = "./test_db_rename_cf"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("old_cf")
+    
+    -- Insert data
+    local cf = db:get_column_family("old_cf")
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    txn:free()
+    
+    -- Rename column family
+    db:rename_column_family("old_cf", "new_cf")
+    
+    -- Verify old name doesn't exist
+    local err = assert_error(function()
+        db:get_column_family("old_cf")
+    end, "old_cf should not exist after rename")
+    
+    -- Verify new name exists and data is preserved
+    local new_cf = db:get_column_family("new_cf")
+    local read_txn = db:begin_txn()
+    local value = read_txn:get(new_cf, "key1")
+    assert_eq(value, "value1", "data should be preserved after rename")
+    read_txn:free()
+    
+    db:drop_column_family("new_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_rename_column_family")
+end
+
+function tests.test_is_flushing_compacting()
+    local path = "./test_db_flush_compact"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Check status (should be false when idle)
+    local is_flushing = cf:is_flushing()
+    local is_compacting = cf:is_compacting()
+    assert_true(is_flushing == false or is_flushing == true, "is_flushing should return boolean")
+    assert_true(is_compacting == false or is_compacting == true, "is_compacting should return boolean")
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_is_flushing_compacting")
+end
+
+function tests.test_backup()
+    local path = "./test_db_backup"
+    local backup_path = "./test_db_backup_copy"
+    cleanup_db(path)
+    cleanup_db(backup_path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Insert data
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    txn:free()
+    
+    -- Create backup
+    db:backup(backup_path)
+    
+    db:close()
+    
+    -- Open backup and verify data
+    local backup_db = tidesdb.TidesDB.open(backup_path)
+    local backup_cf = backup_db:get_column_family("test_cf")
+    local read_txn = backup_db:begin_txn()
+    local value = read_txn:get(backup_cf, "key1")
+    assert_eq(value, "value1", "backup should contain original data")
+    read_txn:free()
+    
+    backup_db:close()
+    cleanup_db(path)
+    cleanup_db(backup_path)
+    print("PASS: test_backup")
+end
+
+function tests.test_update_runtime_config()
+    local path = "./test_db_runtime_config"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Get current config
+    local stats = cf:get_stats()
+    local original_write_buffer_size = stats.config.write_buffer_size
+    
+    -- Update runtime config
+    local new_config = tidesdb.default_column_family_config()
+    new_config.write_buffer_size = 128 * 1024 * 1024  -- 128MB
+    cf:update_runtime_config(new_config, false)  -- don't persist
+    
+    -- Verify config was updated
+    local new_stats = cf:get_stats()
+    assert_eq(new_stats.config.write_buffer_size, 128 * 1024 * 1024, "write_buffer_size should be updated")
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_update_runtime_config")
 end
 
 -- Run all tests
