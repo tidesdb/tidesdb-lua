@@ -46,7 +46,7 @@ ffi.cdef[[
         int min_levels;
         int dividing_level_offset;
         size_t klog_value_threshold;
-        int compression_algo;
+        int compression_algorithm;
         int enable_bloom_filter;
         double bloom_fpr;
         int enable_block_indexes;
@@ -81,6 +81,13 @@ ffi.cdef[[
         size_t* level_sizes;
         int* level_num_sstables;
         tidesdb_column_family_config_t* config;
+        uint64_t total_keys;
+        uint64_t total_data_size;
+        double avg_key_size;
+        double avg_value_size;
+        uint64_t* level_key_counts;
+        double read_amp;
+        double hit_rate;
     } tidesdb_stats_t;
 
     typedef struct {
@@ -102,6 +109,7 @@ ffi.cdef[[
     // Column family functions
     int tidesdb_create_column_family(void* db, const char* name, tidesdb_column_family_config_t* config);
     int tidesdb_drop_column_family(void* db, const char* name);
+    int tidesdb_rename_column_family(void* db, const char* old_name, const char* new_name);
     void* tidesdb_get_column_family(void* db, const char* name);
     int tidesdb_list_column_families(void* db, char*** names, int* count);
 
@@ -134,9 +142,35 @@ ffi.cdef[[
     // Column family operations
     int tidesdb_compact(void* cf);
     int tidesdb_flush_memtable(void* cf);
+    int tidesdb_is_flushing(void* cf);
+    int tidesdb_is_compacting(void* cf);
     int tidesdb_get_stats(void* cf, tidesdb_stats_t** stats);
     void tidesdb_free_stats(tidesdb_stats_t* stats);
     int tidesdb_get_cache_stats(void* db, tidesdb_cache_stats_t* stats);
+
+    // Backup operations
+    int tidesdb_backup(void* db, const char* dir);
+
+    // Configuration operations
+    int tidesdb_cf_config_load_from_ini(const char* ini_file, const char* section_name, tidesdb_column_family_config_t* config);
+    int tidesdb_cf_config_save_to_ini(const char* ini_file, const char* section_name, tidesdb_column_family_config_t* config);
+    int tidesdb_cf_update_runtime_config(void* cf, tidesdb_column_family_config_t* new_config, int persist_to_disk);
+
+    // Comparator operations
+    typedef int (*tidesdb_comparator_fn)(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+    int tidesdb_register_comparator(void* db, const char* name, tidesdb_comparator_fn fn, const char* ctx_str, void* ctx);
+    int tidesdb_get_comparator(void* db, const char* name, tidesdb_comparator_fn* fn, void** ctx);
+
+    // Built-in comparator functions
+    int tidesdb_comparator_memcmp(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+    int tidesdb_comparator_lexicographic(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+    int tidesdb_comparator_uint64(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+    int tidesdb_comparator_int64(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+    int tidesdb_comparator_reverse_memcmp(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+    int tidesdb_comparator_case_insensitive(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+
+    // Memory management
+    void tidesdb_free(void* ptr);
 
     // C standard library
     void free(void* ptr);
@@ -305,7 +339,7 @@ function tidesdb.default_column_family_config()
         min_levels = c_config.min_levels,
         dividing_level_offset = c_config.dividing_level_offset,
         klog_value_threshold = tonumber(c_config.klog_value_threshold),
-        compression_algorithm = c_config.compression_algo,
+        compression_algorithm = c_config.compression_algorithm,
         enable_bloom_filter = c_config.enable_bloom_filter ~= 0,
         bloom_fpr = c_config.bloom_fpr,
         enable_block_indexes = c_config.enable_block_indexes ~= 0,
@@ -331,7 +365,7 @@ local function config_to_c_struct(config)
     c_config.min_levels = config.min_levels or 5
     c_config.dividing_level_offset = config.dividing_level_offset or 2
     c_config.klog_value_threshold = config.klog_value_threshold or 512
-    c_config.compression_algo = config.compression_algorithm or tidesdb.CompressionAlgorithm.LZ4_COMPRESSION
+    c_config.compression_algorithm = config.compression_algorithm or tidesdb.CompressionAlgorithm.LZ4_COMPRESSION
     c_config.enable_bloom_filter = config.enable_bloom_filter and 1 or 0
     c_config.bloom_fpr = config.bloom_fpr or 0.01
     c_config.enable_block_indexes = config.enable_block_indexes and 1 or 0
@@ -476,6 +510,23 @@ function ColumnFamily:flush_memtable()
     check_result(result, "failed to flush memtable")
 end
 
+function ColumnFamily:is_flushing()
+    return lib.tidesdb_is_flushing(self._cf) ~= 0
+end
+
+function ColumnFamily:is_compacting()
+    return lib.tidesdb_is_compacting(self._cf) ~= 0
+end
+
+function ColumnFamily:update_runtime_config(config, persist_to_disk)
+    if persist_to_disk == nil then
+        persist_to_disk = true
+    end
+    local c_config = config_to_c_struct(config)
+    local result = lib.tidesdb_cf_update_runtime_config(self._cf, c_config, persist_to_disk and 1 or 0)
+    check_result(result, "failed to update runtime config")
+end
+
 function ColumnFamily:get_stats()
     local stats_ptr = ffi.new("tidesdb_stats_t*[1]")
     local result = lib.tidesdb_get_stats(self._cf, stats_ptr)
@@ -507,7 +558,7 @@ function ColumnFamily:get_stats()
             min_levels = c_cfg.min_levels,
             dividing_level_offset = c_cfg.dividing_level_offset,
             klog_value_threshold = tonumber(c_cfg.klog_value_threshold),
-            compression_algorithm = c_cfg.compression_algo,
+            compression_algorithm = c_cfg.compression_algorithm,
             enable_bloom_filter = c_cfg.enable_bloom_filter ~= 0,
             bloom_fpr = c_cfg.bloom_fpr,
             enable_block_indexes = c_cfg.enable_block_indexes ~= 0,
@@ -525,12 +576,26 @@ function ColumnFamily:get_stats()
         }
     end
 
+    local level_key_counts = {}
+    if c_stats.num_levels > 0 and c_stats.level_key_counts ~= nil then
+        for i = 0, c_stats.num_levels - 1 do
+            table.insert(level_key_counts, tonumber(c_stats.level_key_counts[i]))
+        end
+    end
+
     local stats = {
         num_levels = c_stats.num_levels,
         memtable_size = tonumber(c_stats.memtable_size),
         level_sizes = level_sizes,
         level_num_sstables = level_num_sstables,
         config = config,
+        total_keys = tonumber(c_stats.total_keys),
+        total_data_size = tonumber(c_stats.total_data_size),
+        avg_key_size = c_stats.avg_key_size,
+        avg_value_size = c_stats.avg_value_size,
+        level_key_counts = level_key_counts,
+        read_amp = c_stats.read_amp,
+        hit_rate = c_stats.hit_rate,
     }
 
     lib.tidesdb_free_stats(stats_ptr[0])
@@ -761,6 +826,15 @@ function TidesDB:drop_column_family(name)
     check_result(result, "failed to drop column family")
 end
 
+function TidesDB:rename_column_family(old_name, new_name)
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_rename_column_family(self._db, old_name, new_name)
+    check_result(result, "failed to rename column family")
+end
+
 function TidesDB:get_column_family(name)
     if self._closed then
         error(TidesDBError.new("Database is closed"))
@@ -846,7 +920,74 @@ function TidesDB:get_cache_stats()
     }
 end
 
+function TidesDB:backup(dir)
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_backup(self._db, dir)
+    check_result(result, "failed to create backup")
+end
+
+function TidesDB:register_comparator(name, fn, ctx_str, ctx)
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_register_comparator(self._db, name, fn, ctx_str, ctx)
+    check_result(result, "failed to register comparator")
+end
+
+function TidesDB:get_comparator(name)
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local fn_ptr = ffi.new("tidesdb_comparator_fn[1]")
+    local ctx_ptr = ffi.new("void*[1]")
+    local result = lib.tidesdb_get_comparator(self._db, name, fn_ptr, ctx_ptr)
+    check_result(result, "failed to get comparator")
+
+    return fn_ptr[0], ctx_ptr[0]
+end
+
 tidesdb.TidesDB = TidesDB
+
+-- Configuration file operations
+function tidesdb.load_config_from_ini(ini_file, section_name)
+    local c_config = ffi.new("tidesdb_column_family_config_t")
+    local result = lib.tidesdb_cf_config_load_from_ini(ini_file, section_name, c_config)
+    check_result(result, "failed to load config from INI")
+
+    return {
+        write_buffer_size = tonumber(c_config.write_buffer_size),
+        level_size_ratio = tonumber(c_config.level_size_ratio),
+        min_levels = c_config.min_levels,
+        dividing_level_offset = c_config.dividing_level_offset,
+        klog_value_threshold = tonumber(c_config.klog_value_threshold),
+        compression_algorithm = c_config.compression_algorithm,
+        enable_bloom_filter = c_config.enable_bloom_filter ~= 0,
+        bloom_fpr = c_config.bloom_fpr,
+        enable_block_indexes = c_config.enable_block_indexes ~= 0,
+        index_sample_ratio = c_config.index_sample_ratio,
+        block_index_prefix_len = c_config.block_index_prefix_len,
+        sync_mode = c_config.sync_mode,
+        sync_interval_us = tonumber(c_config.sync_interval_us),
+        comparator_name = ffi.string(c_config.comparator_name),
+        skip_list_max_level = c_config.skip_list_max_level,
+        skip_list_probability = c_config.skip_list_probability,
+        default_isolation_level = c_config.default_isolation_level,
+        min_disk_space = tonumber(c_config.min_disk_space),
+        l1_file_count_trigger = c_config.l1_file_count_trigger,
+        l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
+    }
+end
+
+function tidesdb.save_config_to_ini(ini_file, section_name, config)
+    local c_config = config_to_c_struct(config)
+    local result = lib.tidesdb_cf_config_save_to_ini(ini_file, section_name, c_config)
+    check_result(result, "failed to save config to INI")
+end
 
 -- Version
 tidesdb._VERSION = "0.2.0"
