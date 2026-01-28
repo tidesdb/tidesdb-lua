@@ -73,6 +73,8 @@ ffi.cdef[[
         int log_level;
         size_t block_cache_size;
         size_t max_open_sstables;
+        int log_to_file;
+        size_t log_truncation_at;
     } tidesdb_config_t;
 
     typedef struct {
@@ -328,6 +330,8 @@ function tidesdb.default_config()
         log_level = tidesdb.LogLevel.LOG_INFO,
         block_cache_size = 64 * 1024 * 1024,
         max_open_sstables = 256,
+        log_to_file = false,
+        log_truncation_at = 24 * 1024 * 1024,
     }
 end
 
@@ -771,6 +775,8 @@ function TidesDB.new(config)
     c_config.log_level = config.log_level or tidesdb.LogLevel.LOG_INFO
     c_config.block_cache_size = config.block_cache_size or 64 * 1024 * 1024
     c_config.max_open_sstables = config.max_open_sstables or 256
+    c_config.log_to_file = config.log_to_file and 1 or 0
+    c_config.log_truncation_at = config.log_truncation_at or 24 * 1024 * 1024
 
     local db_ptr = ffi.new("void*[1]")
     local result = lib.tidesdb_open(c_config, db_ptr)
@@ -789,6 +795,8 @@ function TidesDB.open(path, options)
         log_level = options.log_level or tidesdb.LogLevel.LOG_INFO,
         block_cache_size = options.block_cache_size or 64 * 1024 * 1024,
         max_open_sstables = options.max_open_sstables or 256,
+        log_to_file = options.log_to_file or false,
+        log_truncation_at = options.log_truncation_at or 24 * 1024 * 1024,
     }
     return TidesDB.new(config)
 end
