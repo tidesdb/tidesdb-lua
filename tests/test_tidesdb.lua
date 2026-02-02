@@ -403,6 +403,85 @@ function tests.test_update_runtime_config()
     print("PASS: test_update_runtime_config")
 end
 
+function tests.test_use_btree_config()
+    local path = "./test_db_btree"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    
+    -- Create column family with use_btree enabled
+    local cf_config = tidesdb.default_column_family_config()
+    cf_config.use_btree = true
+    db:create_column_family("btree_cf", cf_config)
+    
+    local cf = db:get_column_family("btree_cf")
+    
+    -- Insert some data
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:put(cf, "key2", "value2")
+    txn:commit()
+    txn:free()
+    
+    -- Verify use_btree in stats
+    local stats = cf:get_stats()
+    assert_true(stats.use_btree ~= nil, "use_btree should exist in stats")
+    assert_true(stats.config.use_btree ~= nil, "use_btree should exist in config")
+    
+    -- Verify B+tree stats fields exist
+    assert_true(stats.btree_total_nodes ~= nil, "btree_total_nodes should exist")
+    assert_true(stats.btree_max_height ~= nil, "btree_max_height should exist")
+    assert_true(stats.btree_avg_height ~= nil, "btree_avg_height should exist")
+    
+    -- Read back data to verify it works
+    local read_txn = db:begin_txn()
+    local value1 = read_txn:get(cf, "key1")
+    local value2 = read_txn:get(cf, "key2")
+    assert_eq(value1, "value1", "get key1 with btree")
+    assert_eq(value2, "value2", "get key2 with btree")
+    read_txn:free()
+    
+    db:drop_column_family("btree_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_use_btree_config")
+end
+
+function tests.test_btree_stats_extended()
+    local path = "./test_db_btree_stats"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    
+    -- Create column family without btree (default)
+    local cf_config = tidesdb.default_column_family_config()
+    cf_config.use_btree = false
+    db:create_column_family("block_cf", cf_config)
+    
+    local cf = db:get_column_family("block_cf")
+    
+    -- Insert data
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    txn:free()
+    
+    -- Verify stats
+    local stats = cf:get_stats()
+    assert_eq(stats.use_btree, false, "use_btree should be false for block-based CF")
+    assert_eq(stats.config.use_btree, false, "config.use_btree should be false")
+    
+    -- B+tree stats should still exist but be zero/default for non-btree CF
+    assert_true(stats.btree_total_nodes ~= nil, "btree_total_nodes should exist")
+    assert_true(stats.btree_max_height ~= nil, "btree_max_height should exist")
+    assert_true(stats.btree_avg_height ~= nil, "btree_avg_height should exist")
+    
+    db:drop_column_family("block_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_btree_stats_extended")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")

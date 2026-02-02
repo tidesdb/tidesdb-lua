@@ -64,6 +64,7 @@ ffi.cdef[[
         uint64_t min_disk_space;
         int l1_file_count_trigger;
         int l0_queue_stall_threshold;
+        int use_btree;
     } tidesdb_column_family_config_t;
 
     typedef struct {
@@ -90,6 +91,10 @@ ffi.cdef[[
         uint64_t* level_key_counts;
         double read_amp;
         double hit_rate;
+        int use_btree;
+        uint64_t btree_total_nodes;
+        uint32_t btree_max_height;
+        double btree_avg_height;
     } tidesdb_stats_t;
 
     typedef struct {
@@ -358,6 +363,7 @@ function tidesdb.default_column_family_config()
         min_disk_space = tonumber(c_config.min_disk_space),
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
+        use_btree = c_config.use_btree ~= 0,
     }
 end
 
@@ -383,6 +389,7 @@ local function config_to_c_struct(config)
     c_config.min_disk_space = config.min_disk_space or 100 * 1024 * 1024
     c_config.l1_file_count_trigger = config.l1_file_count_trigger or 4
     c_config.l0_queue_stall_threshold = config.l0_queue_stall_threshold or 20
+    c_config.use_btree = config.use_btree and 1 or 0
 
     local name = config.comparator_name or "memcmp"
     local name_len = math.min(#name, 63)
@@ -577,6 +584,7 @@ function ColumnFamily:get_stats()
             min_disk_space = tonumber(c_cfg.min_disk_space),
             l1_file_count_trigger = c_cfg.l1_file_count_trigger,
             l0_queue_stall_threshold = c_cfg.l0_queue_stall_threshold,
+            use_btree = c_cfg.use_btree ~= 0,
         }
     end
 
@@ -600,6 +608,10 @@ function ColumnFamily:get_stats()
         level_key_counts = level_key_counts,
         read_amp = c_stats.read_amp,
         hit_rate = c_stats.hit_rate,
+        use_btree = c_stats.use_btree ~= 0,
+        btree_total_nodes = tonumber(c_stats.btree_total_nodes),
+        btree_max_height = c_stats.btree_max_height,
+        btree_avg_height = c_stats.btree_avg_height,
     }
 
     lib.tidesdb_free_stats(stats_ptr[0])
@@ -988,6 +1000,7 @@ function tidesdb.load_config_from_ini(ini_file, section_name)
         min_disk_space = tonumber(c_config.min_disk_space),
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
+        use_btree = c_config.use_btree ~= 0,
     }
 end
 
@@ -998,6 +1011,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.2.0"
+tidesdb._VERSION = "0.3.0"
 
 return tidesdb
