@@ -482,6 +482,113 @@ function tests.test_btree_stats_extended()
     print("PASS: test_btree_stats_extended")
 end
 
+function tests.test_clone_column_family()
+    local path = "./test_db_clone_cf"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("source_cf")
+    local cf = db:get_column_family("source_cf")
+    
+    -- Insert data into source
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:put(cf, "key2", "value2")
+    txn:commit()
+    txn:free()
+    
+    -- Clone column family
+    db:clone_column_family("source_cf", "cloned_cf")
+    
+    -- Verify cloned column family exists
+    local cloned_cf = db:get_column_family("cloned_cf")
+    assert_true(cloned_cf ~= nil, "cloned column family should exist")
+    
+    -- Verify data is preserved in clone
+    local read_txn = db:begin_txn()
+    local v1 = read_txn:get(cloned_cf, "key1")
+    local v2 = read_txn:get(cloned_cf, "key2")
+    assert_eq(v1, "value1", "cloned key1 should have correct value")
+    assert_eq(v2, "value2", "cloned key2 should have correct value")
+    read_txn:free()
+    
+    -- Verify source still works independently
+    local src_txn = db:begin_txn()
+    local sv1 = src_txn:get(cf, "key1")
+    assert_eq(sv1, "value1", "source key1 should still exist")
+    src_txn:free()
+    
+    -- Verify modifications to clone don't affect source
+    local write_txn = db:begin_txn()
+    write_txn:put(cloned_cf, "key3", "value3")
+    write_txn:commit()
+    write_txn:free()
+    
+    local verify_txn = db:begin_txn()
+    local v3 = verify_txn:get(cloned_cf, "key3")
+    assert_eq(v3, "value3", "key3 should exist in clone")
+    local err = assert_error(function()
+        verify_txn:get(cf, "key3")
+    end, "key3 should not exist in source")
+    verify_txn:free()
+    
+    -- Verify cloning to existing name fails
+    local clone_err = assert_error(function()
+        db:clone_column_family("source_cf", "cloned_cf")
+    end, "cloning to existing name should fail")
+    
+    db:drop_column_family("source_cf")
+    db:drop_column_family("cloned_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_clone_column_family")
+end
+
+function tests.test_transaction_reset()
+    local path = "./test_db_txn_reset"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Begin transaction and do first batch of work
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    
+    -- Reset transaction instead of free + begin
+    txn:reset(tidesdb.IsolationLevel.READ_COMMITTED)
+    
+    -- Second batch of work using the same transaction
+    txn:put(cf, "key2", "value2")
+    txn:commit()
+    
+    -- Reset again with different isolation level
+    txn:reset(tidesdb.IsolationLevel.SERIALIZABLE)
+    
+    -- Third batch
+    txn:put(cf, "key3", "value3")
+    txn:commit()
+    
+    txn:free()
+    
+    -- Verify all data was written
+    local read_txn = db:begin_txn()
+    local v1 = read_txn:get(cf, "key1")
+    local v2 = read_txn:get(cf, "key2")
+    local v3 = read_txn:get(cf, "key3")
+    assert_eq(v1, "value1", "key1 should exist after reset")
+    assert_eq(v2, "value2", "key2 should exist after reset")
+    assert_eq(v3, "value3", "key3 should exist after reset")
+    read_txn:free()
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_transaction_reset")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")

@@ -117,6 +117,7 @@ ffi.cdef[[
     int tidesdb_create_column_family(void* db, const char* name, tidesdb_column_family_config_t* config);
     int tidesdb_drop_column_family(void* db, const char* name);
     int tidesdb_rename_column_family(void* db, const char* old_name, const char* new_name);
+    int tidesdb_clone_column_family(void* db, const char* source_name, const char* dest_name);
     void* tidesdb_get_column_family(void* db, const char* name);
     int tidesdb_list_column_families(void* db, char*** names, int* count);
 
@@ -129,6 +130,7 @@ ffi.cdef[[
     int tidesdb_txn_commit(void* txn);
     int tidesdb_txn_rollback(void* txn);
     void tidesdb_txn_free(void* txn);
+    int tidesdb_txn_reset(void* txn, int isolation);
     int tidesdb_txn_savepoint(void* txn, const char* name);
     int tidesdb_txn_rollback_to_savepoint(void* txn, const char* name);
     int tidesdb_txn_release_savepoint(void* txn, const char* name);
@@ -703,6 +705,16 @@ function Transaction:rollback()
     check_result(result, "failed to rollback transaction")
 end
 
+function Transaction:reset(isolation)
+    if self._closed then
+        error(TidesDBError.new("Transaction is closed"))
+    end
+
+    local result = lib.tidesdb_txn_reset(self._txn, isolation)
+    check_result(result, "failed to reset transaction")
+    self._committed = false
+end
+
 function Transaction:savepoint(name)
     if self._closed then
         error(TidesDBError.new("Transaction is closed"))
@@ -853,6 +865,15 @@ function TidesDB:rename_column_family(old_name, new_name)
 
     local result = lib.tidesdb_rename_column_family(self._db, old_name, new_name)
     check_result(result, "failed to rename column family")
+end
+
+function TidesDB:clone_column_family(source_name, dest_name)
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_clone_column_family(self._db, source_name, dest_name)
+    check_result(result, "failed to clone column family")
 end
 
 function TidesDB:get_column_family(name)
@@ -1011,6 +1032,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.3.0"
+tidesdb._VERSION = "0.5.0"
 
 return tidesdb
