@@ -376,6 +376,54 @@ function tests.test_backup()
     print("PASS: test_backup")
 end
 
+function tests.test_checkpoint()
+    local path = "./test_db_checkpoint"
+    local checkpoint_path = "./test_db_checkpoint_snap"
+    cleanup_db(path)
+    cleanup_db(checkpoint_path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Insert data
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:put(cf, "key2", "value2")
+    txn:commit()
+    txn:free()
+    
+    -- Create checkpoint
+    db:checkpoint(checkpoint_path)
+    
+    db:close()
+    
+    -- Open checkpoint and verify data
+    local cp_db = tidesdb.TidesDB.open(checkpoint_path)
+    local cp_cf = cp_db:get_column_family("test_cf")
+    local read_txn = cp_db:begin_txn()
+    local v1 = read_txn:get(cp_cf, "key1")
+    local v2 = read_txn:get(cp_cf, "key2")
+    assert_eq(v1, "value1", "checkpoint should contain key1")
+    assert_eq(v2, "value2", "checkpoint should contain key2")
+    read_txn:free()
+    
+    -- Verify checkpoint to existing non-empty dir fails
+    cp_db:close()
+    
+    local db2 = tidesdb.TidesDB.open(path)
+    local cf2 = db2:get_column_family("test_cf")
+    
+    local err = assert_error(function()
+        db2:checkpoint(checkpoint_path)
+    end, "checkpoint to non-empty dir should fail")
+    
+    db2:close()
+    cleanup_db(path)
+    cleanup_db(checkpoint_path)
+    print("PASS: test_checkpoint")
+end
+
 function tests.test_update_runtime_config()
     local path = "./test_db_runtime_config"
     cleanup_db(path)

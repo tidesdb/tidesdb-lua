@@ -159,6 +159,7 @@ ffi.cdef[[
 
     // Backup operations
     int tidesdb_backup(void* db, const char* dir);
+    int tidesdb_checkpoint(void* db, const char* checkpoint_dir);
 
     // Configuration operations
     int tidesdb_cf_config_load_from_ini(const char* ini_file, const char* section_name, tidesdb_column_family_config_t* config);
@@ -970,6 +971,15 @@ function TidesDB:backup(dir)
     check_result(result, "failed to create backup")
 end
 
+function TidesDB:checkpoint(dir)
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_checkpoint(self._db, dir)
+    check_result(result, "failed to create checkpoint")
+end
+
 function TidesDB:register_comparator(name, fn, ctx_str, ctx)
     if self._closed then
         error(TidesDBError.new("Database is closed"))
@@ -1032,6 +1042,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.0"
+tidesdb._VERSION = "0.5.1"
 
 return tidesdb
