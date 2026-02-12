@@ -412,12 +412,7 @@ function tests.test_checkpoint()
     cp_db:close()
     
     local db2 = tidesdb.TidesDB.open(path)
-    db2:create_column_family("test_cf")
     local cf2 = db2:get_column_family("test_cf")
-    local txn2 = db2:begin_txn()
-    txn2:put(cf2, "key1", "value1")
-    txn2:commit()
-    txn2:free()
     
     local err = assert_error(function()
         db2:checkpoint(checkpoint_path)
