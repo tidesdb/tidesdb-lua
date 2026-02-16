@@ -40,7 +40,10 @@ ffi.cdef[[
     static const int TDB_ERR_LOCKED = -12;
 
     // Structures
+    static const int TDB_MAX_CF_NAME_LEN = 128;
+
     typedef struct {
+        char name[128];
         size_t write_buffer_size;
         size_t level_size_ratio;
         int min_levels;
@@ -371,8 +374,16 @@ function tidesdb.default_column_family_config()
 end
 
 -- Convert Lua config to C struct
-local function config_to_c_struct(config)
+local function config_to_c_struct(config, cf_name)
     local c_config = ffi.new("tidesdb_column_family_config_t")
+
+    -- Set the name field if provided
+    if cf_name then
+        local name_len = math.min(#cf_name, 127)
+        ffi.copy(c_config.name, cf_name, name_len)
+        c_config.name[name_len] = 0
+    end
+
     c_config.write_buffer_size = config.write_buffer_size or 64 * 1024 * 1024
     c_config.level_size_ratio = config.level_size_ratio or 10
     c_config.min_levels = config.min_levels or 5
@@ -845,7 +856,7 @@ function TidesDB:create_column_family(name, config)
         config = tidesdb.default_column_family_config()
     end
 
-    local c_config = config_to_c_struct(config)
+    local c_config = config_to_c_struct(config, name)
     local result = lib.tidesdb_create_column_family(self._db, name, c_config)
     check_result(result, "failed to create column family")
 end
@@ -1042,6 +1053,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.1"
+tidesdb._VERSION = "0.5.2"
 
 return tidesdb
