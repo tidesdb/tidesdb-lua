@@ -637,6 +637,45 @@ function tests.test_transaction_reset()
     print("PASS: test_transaction_reset")
 end
 
+function tests.test_range_cost()
+    local path = "./test_db_range_cost"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Insert some data
+    local txn = db:begin_txn()
+    for i = 1, 20 do
+        txn:put(cf, string.format("key:%04d", i), string.format("value:%04d", i))
+    end
+    txn:commit()
+    txn:free()
+    
+    -- Estimate range cost
+    local cost = cf:range_cost("key:0001", "key:0020")
+    assert_true(cost ~= nil, "range cost should not be nil")
+    assert_true(type(cost) == "number", "range cost should be a number")
+    assert_true(cost >= 0, "range cost should be >= 0")
+    
+    -- Compare two ranges (wider range should cost >= narrower range)
+    local cost_wide = cf:range_cost("key:0001", "key:0020")
+    local cost_narrow = cf:range_cost("key:0005", "key:0010")
+    assert_true(cost_wide >= 0, "wide range cost should be >= 0")
+    assert_true(cost_narrow >= 0, "narrow range cost should be >= 0")
+    
+    -- Key order should not matter
+    local cost_ab = cf:range_cost("key:0001", "key:0020")
+    local cost_ba = cf:range_cost("key:0020", "key:0001")
+    assert_eq(cost_ab, cost_ba, "range cost should be the same regardless of key order")
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_range_cost")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")
