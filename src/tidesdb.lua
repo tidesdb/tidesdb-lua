@@ -159,6 +159,7 @@ ffi.cdef[[
     int tidesdb_get_stats(void* cf, tidesdb_stats_t** stats);
     void tidesdb_free_stats(tidesdb_stats_t* stats);
     int tidesdb_get_cache_stats(void* db, tidesdb_cache_stats_t* stats);
+    int tidesdb_range_cost(void* cf, const uint8_t* key_a, size_t key_a_size, const uint8_t* key_b, size_t key_b_size, double* cost);
 
     // Backup operations
     int tidesdb_backup(void* db, const char* dir);
@@ -550,6 +551,13 @@ function ColumnFamily:update_runtime_config(config, persist_to_disk)
     local c_config = config_to_c_struct(config)
     local result = lib.tidesdb_cf_update_runtime_config(self._cf, c_config, persist_to_disk and 1 or 0)
     check_result(result, "failed to update runtime config")
+end
+
+function ColumnFamily:range_cost(key_a, key_b)
+    local cost = ffi.new("double[1]")
+    local result = lib.tidesdb_range_cost(self._cf, key_a, #key_a, key_b, #key_b, cost)
+    check_result(result, "failed to estimate range cost")
+    return cost[0]
 end
 
 function ColumnFamily:get_stats()
@@ -1053,6 +1061,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.2"
+tidesdb._VERSION = "0.5.3"
 
 return tidesdb
