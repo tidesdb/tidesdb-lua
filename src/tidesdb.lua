@@ -47,7 +47,7 @@ ffi.cdef[[
         size_t key_size;
         const uint8_t *value;
         size_t value_size;
-        long ttl;
+        int64_t ttl;
         int is_delete;
     } tidesdb_commit_op_t;
 
