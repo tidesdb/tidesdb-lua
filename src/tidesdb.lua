@@ -43,6 +43,18 @@ ffi.cdef[[
     static const int TDB_MAX_CF_NAME_LEN = 128;
 
     typedef struct {
+        const uint8_t *key;
+        size_t key_size;
+        const uint8_t *value;
+        size_t value_size;
+        long ttl;
+        int is_delete;
+    } tidesdb_commit_op_t;
+
+    typedef int (*tidesdb_commit_hook_fn)(const tidesdb_commit_op_t *ops, int num_ops,
+                                          uint64_t commit_seq, void *ctx);
+
+    typedef struct {
         char name[128];
         size_t write_buffer_size;
         size_t level_size_ratio;
@@ -68,6 +80,8 @@ ffi.cdef[[
         int l1_file_count_trigger;
         int l0_queue_stall_threshold;
         int use_btree;
+        tidesdb_commit_hook_fn commit_hook_fn;
+        void *commit_hook_ctx;
     } tidesdb_column_family_config_t;
 
     typedef struct {
@@ -160,6 +174,9 @@ ffi.cdef[[
     void tidesdb_free_stats(tidesdb_stats_t* stats);
     int tidesdb_get_cache_stats(void* db, tidesdb_cache_stats_t* stats);
     int tidesdb_range_cost(void* cf, const uint8_t* key_a, size_t key_a_size, const uint8_t* key_b, size_t key_b_size, double* cost);
+
+    // Commit hook operations
+    int tidesdb_cf_set_commit_hook(void* cf, tidesdb_commit_hook_fn fn, void* ctx);
 
     // Backup operations
     int tidesdb_backup(void* db, const char* dir);
@@ -551,6 +568,16 @@ function ColumnFamily:update_runtime_config(config, persist_to_disk)
     local c_config = config_to_c_struct(config)
     local result = lib.tidesdb_cf_update_runtime_config(self._cf, c_config, persist_to_disk and 1 or 0)
     check_result(result, "failed to update runtime config")
+end
+
+function ColumnFamily:set_commit_hook(fn, ctx)
+    local result = lib.tidesdb_cf_set_commit_hook(self._cf, fn, ctx)
+    check_result(result, "failed to set commit hook")
+end
+
+function ColumnFamily:clear_commit_hook()
+    local result = lib.tidesdb_cf_set_commit_hook(self._cf, nil, nil)
+    check_result(result, "failed to clear commit hook")
 end
 
 function ColumnFamily:range_cost(key_a, key_b)
@@ -1061,6 +1088,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.3"
+tidesdb._VERSION = "0.5.4"
 
 return tidesdb
