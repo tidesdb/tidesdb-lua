@@ -676,6 +676,92 @@ function tests.test_range_cost()
     print("PASS: test_range_cost")
 end
 
+function tests.test_commit_hook()
+    local ffi = require("ffi")
+    local path = "./test_db_commit_hook"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Track hook invocations
+    local hook_called = 0
+    local hook_ops_count = 0
+    local hook_seq = 0
+    local hook_keys = {}
+    local hook_had_delete = false
+    
+    local hook = ffi.cast("tidesdb_commit_hook_fn", function(ops, num_ops, commit_seq, ctx)
+        hook_called = hook_called + 1
+        hook_ops_count = hook_ops_count + num_ops
+        hook_seq = tonumber(commit_seq)
+        for i = 0, num_ops - 1 do
+            local key = ffi.string(ops[i].key, ops[i].key_size)
+            table.insert(hook_keys, key)
+            if ops[i].is_delete ~= 0 then
+                hook_had_delete = true
+            end
+        end
+        return 0
+    end)
+    
+    -- Set commit hook
+    cf:set_commit_hook(hook, nil)
+    
+    -- Write data (should trigger the hook)
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:put(cf, "key2", "value2")
+    txn:commit()
+    txn:free()
+    
+    assert_true(hook_called >= 1, "commit hook should have been called")
+    assert_true(hook_ops_count >= 2, "hook should have received at least 2 ops")
+    assert_true(hook_seq > 0, "commit_seq should be > 0")
+    
+    -- Verify keys were captured
+    local found_key1 = false
+    local found_key2 = false
+    for _, k in ipairs(hook_keys) do
+        if k == "key1" then found_key1 = true end
+        if k == "key2" then found_key2 = true end
+    end
+    assert_true(found_key1, "hook should have received key1")
+    assert_true(found_key2, "hook should have received key2")
+    
+    -- Test delete operation fires hook
+    hook_had_delete = false
+    local del_txn = db:begin_txn()
+    del_txn:delete(cf, "key1")
+    del_txn:commit()
+    del_txn:free()
+    
+    assert_true(hook_had_delete, "hook should have received a delete operation")
+    
+    -- Save hook_called count before clearing
+    local calls_before_clear = hook_called
+    
+    -- Clear commit hook
+    cf:clear_commit_hook()
+    
+    -- Write more data (should NOT trigger the hook)
+    local txn2 = db:begin_txn()
+    txn2:put(cf, "key3", "value3")
+    txn2:commit()
+    txn2:free()
+    
+    assert_eq(hook_called, calls_before_clear, "hook should not fire after clearing")
+    
+    -- Clean up the callback to prevent GC issues
+    hook:free()
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_commit_hook")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")
