@@ -762,6 +762,43 @@ function tests.test_commit_hook()
     print("PASS: test_commit_hook")
 end
 
+function tests.test_max_memory_usage()
+    local path = "./test_db_max_mem"
+    cleanup_db(path)
+    
+    -- Test default config includes max_memory_usage
+    local default_cfg = tidesdb.default_config()
+    assert_true(default_cfg.max_memory_usage ~= nil, "max_memory_usage should exist in default config")
+    
+    -- Test opening database with default max_memory_usage (0 = unlimited)
+    local db1 = tidesdb.TidesDB.open(path)
+    assert_true(db1 ~= nil, "database should open with default max_memory_usage")
+    db1:close()
+    cleanup_db(path)
+    
+    -- Test opening database with custom max_memory_usage
+    local db2 = tidesdb.TidesDB.open(path, {
+        max_memory_usage = 512 * 1024 * 1024  -- 512 MB
+    })
+    assert_true(db2 ~= nil, "database should open with custom max_memory_usage")
+    db2:close()
+    cleanup_db(path)
+    
+    -- Test with TidesDB.new() constructor
+    local config = {
+        db_path = path,
+        num_flush_threads = 2,
+        num_compaction_threads = 2,
+        max_memory_usage = 256 * 1024 * 1024  -- 256 MB
+    }
+    local db3 = tidesdb.TidesDB.new(config)
+    assert_true(db3 ~= nil, "database should be created with TidesDB.new() and max_memory_usage")
+    db3:close()
+    
+    cleanup_db(path)
+    print("PASS: test_max_memory_usage")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")
