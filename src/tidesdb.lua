@@ -93,6 +93,7 @@ ffi.cdef[[
         size_t max_open_sstables;
         int log_to_file;
         size_t log_truncation_at;
+        size_t max_memory_usage;
     } tidesdb_config_t;
 
     typedef struct {
@@ -361,6 +362,7 @@ function tidesdb.default_config()
         max_open_sstables = 256,
         log_to_file = false,
         log_truncation_at = 24 * 1024 * 1024,
+        max_memory_usage = 0,
     }
 end
 
@@ -848,6 +850,7 @@ function TidesDB.new(config)
     c_config.max_open_sstables = config.max_open_sstables or 256
     c_config.log_to_file = config.log_to_file and 1 or 0
     c_config.log_truncation_at = config.log_truncation_at or 24 * 1024 * 1024
+    c_config.max_memory_usage = config.max_memory_usage or 0
 
     local db_ptr = ffi.new("void*[1]")
     local result = lib.tidesdb_open(c_config, db_ptr)
@@ -868,6 +871,7 @@ function TidesDB.open(path, options)
         max_open_sstables = options.max_open_sstables or 256,
         log_to_file = options.log_to_file or false,
         log_truncation_at = options.log_truncation_at or 24 * 1024 * 1024,
+        max_memory_usage = options.max_memory_usage or 0,
     }
     return TidesDB.new(config)
 end
