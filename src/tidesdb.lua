@@ -134,6 +134,7 @@ ffi.cdef[[
     // Column family functions
     int tidesdb_create_column_family(void* db, const char* name, tidesdb_column_family_config_t* config);
     int tidesdb_drop_column_family(void* db, const char* name);
+    int tidesdb_delete_column_family(void* db, void* cf);
     int tidesdb_rename_column_family(void* db, const char* old_name, const char* new_name);
     int tidesdb_clone_column_family(void* db, const char* source_name, const char* dest_name);
     void* tidesdb_get_column_family(void* db, const char* name);
@@ -909,6 +910,15 @@ function TidesDB:drop_column_family(name)
     check_result(result, "failed to drop column family")
 end
 
+function TidesDB:delete_column_family(cf)
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_delete_column_family(self._db, cf._cf)
+    check_result(result, "failed to delete column family")
+end
+
 function TidesDB:rename_column_family(old_name, new_name)
     if self._closed then
         error(TidesDBError.new("Database is closed"))
@@ -1092,6 +1102,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.4"
+tidesdb._VERSION = "0.5.5"
 
 return tidesdb
