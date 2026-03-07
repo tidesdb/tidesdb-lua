@@ -762,6 +762,117 @@ function tests.test_commit_hook()
     print("PASS: test_commit_hook")
 end
 
+function tests.test_delete_column_family()
+    local path = "./test_db_delete_cf"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Insert data
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    txn:free()
+    
+    -- Delete column family by pointer
+    db:delete_column_family(cf)
+    
+    -- Verify column family no longer exists
+    local err = assert_error(function()
+        db:get_column_family("test_cf")
+    end, "test_cf should not exist after delete")
+    
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_delete_column_family")
+end
+
+function tests.test_iterator_seek()
+    local path = "./test_db_iter_seek"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Insert ordered data
+    local txn = db:begin_txn()
+    txn:put(cf, "key:0001", "val1")
+    txn:put(cf, "key:0002", "val2")
+    txn:put(cf, "key:0003", "val3")
+    txn:put(cf, "key:0004", "val4")
+    txn:put(cf, "key:0005", "val5")
+    txn:commit()
+    txn:free()
+    
+    -- Test seek to specific key
+    local read_txn = db:begin_txn()
+    local iter = read_txn:new_iterator(cf)
+    
+    iter:seek("key:0003")
+    assert_true(iter:valid(), "iterator should be valid after seek")
+    assert_eq(iter:key(), "key:0003", "seek should find exact key")
+    
+    -- Test seek_for_prev
+    iter:seek_for_prev("key:0004")
+    assert_true(iter:valid(), "iterator should be valid after seek_for_prev")
+    assert_eq(iter:key(), "key:0004", "seek_for_prev should find exact key")
+    
+    -- Test seek to non-existent key (should find next key >= target)
+    iter:seek("key:0002x")
+    assert_true(iter:valid(), "iterator should be valid after seek to non-existent key")
+    assert_eq(iter:key(), "key:0003", "seek should find next key >= target")
+    
+    iter:free()
+    read_txn:free()
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_iterator_seek")
+end
+
+function tests.test_multi_cf_transaction()
+    local path = "./test_db_multi_cf"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("cf_a")
+    db:create_column_family("cf_b")
+    local cf_a = db:get_column_family("cf_a")
+    local cf_b = db:get_column_family("cf_b")
+    
+    -- Atomic transaction across two column families
+    local txn = db:begin_txn()
+    txn:put(cf_a, "user:1", "Alice")
+    txn:put(cf_b, "order:1", "user:1|item:A")
+    txn:commit()
+    txn:free()
+    
+    -- Verify both CFs have data
+    local read_txn = db:begin_txn()
+    local user = read_txn:get(cf_a, "user:1")
+    local order = read_txn:get(cf_b, "order:1")
+    assert_eq(user, "Alice", "cf_a should have user data")
+    assert_eq(order, "user:1|item:A", "cf_b should have order data")
+    read_txn:free()
+    
+    -- Verify independence: data in cf_a is not in cf_b
+    local verify_txn = db:begin_txn()
+    local err = assert_error(function()
+        verify_txn:get(cf_b, "user:1")
+    end, "user:1 should not exist in cf_b")
+    verify_txn:free()
+    
+    db:drop_column_family("cf_a")
+    db:drop_column_family("cf_b")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_multi_cf_transaction")
+end
+
 function tests.test_max_memory_usage()
     local path = "./test_db_max_mem"
     cleanup_db(path)
