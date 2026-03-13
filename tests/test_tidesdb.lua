@@ -910,6 +910,164 @@ function tests.test_max_memory_usage()
     print("PASS: test_max_memory_usage")
 end
 
+function tests.test_sync_wal()
+    local path = "./test_db_sync_wal"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    local cf_config = tidesdb.default_column_family_config()
+    cf_config.sync_mode = tidesdb.SyncMode.SYNC_NONE
+    db:create_column_family("test_cf", cf_config)
+    local cf = db:get_column_family("test_cf")
+    
+    -- Write some data
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:put(cf, "key2", "value2")
+    txn:commit()
+    txn:free()
+    
+    -- Manually sync WAL
+    cf:sync_wal()
+    
+    -- Verify data is still readable after sync
+    local read_txn = db:begin_txn()
+    local v1 = read_txn:get(cf, "key1")
+    local v2 = read_txn:get(cf, "key2")
+    assert_eq(v1, "value1", "key1 should be readable after sync_wal")
+    assert_eq(v2, "value2", "key2 should be readable after sync_wal")
+    read_txn:free()
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_sync_wal")
+end
+
+function tests.test_purge_cf()
+    local path = "./test_db_purge_cf"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+    
+    -- Write some data
+    local txn = db:begin_txn()
+    for i = 1, 10 do
+        txn:put(cf, string.format("key:%04d", i), string.format("value:%04d", i))
+    end
+    txn:commit()
+    txn:free()
+    
+    -- Purge column family (synchronous flush + compaction)
+    cf:purge()
+    
+    -- Verify data is still readable after purge
+    local read_txn = db:begin_txn()
+    local v1 = read_txn:get(cf, "key:0001")
+    local v10 = read_txn:get(cf, "key:0010")
+    assert_eq(v1, "value:0001", "key:0001 should be readable after purge_cf")
+    assert_eq(v10, "value:0010", "key:0010 should be readable after purge_cf")
+    read_txn:free()
+    
+    -- After purge, flushing and compacting should be done
+    assert_eq(cf:is_flushing(), false, "should not be flushing after purge")
+    assert_eq(cf:is_compacting(), false, "should not be compacting after purge")
+    
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_purge_cf")
+end
+
+function tests.test_purge_db()
+    local path = "./test_db_purge_db"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    db:create_column_family("cf_a")
+    db:create_column_family("cf_b")
+    local cf_a = db:get_column_family("cf_a")
+    local cf_b = db:get_column_family("cf_b")
+    
+    -- Write data to both CFs
+    local txn = db:begin_txn()
+    txn:put(cf_a, "a_key1", "a_value1")
+    txn:put(cf_b, "b_key1", "b_value1")
+    txn:commit()
+    txn:free()
+    
+    -- Purge entire database
+    db:purge()
+    
+    -- Verify data is still readable
+    local read_txn = db:begin_txn()
+    local va = read_txn:get(cf_a, "a_key1")
+    local vb = read_txn:get(cf_b, "b_key1")
+    assert_eq(va, "a_value1", "cf_a key should be readable after db purge")
+    assert_eq(vb, "b_value1", "cf_b key should be readable after db purge")
+    read_txn:free()
+    
+    db:drop_column_family("cf_a")
+    db:drop_column_family("cf_b")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_purge_db")
+end
+
+function tests.test_get_db_stats()
+    local path = "./test_db_db_stats"
+    cleanup_db(path)
+    
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    db:create_column_family("cf_a")
+    db:create_column_family("cf_b")
+    local cf_a = db:get_column_family("cf_a")
+    local cf_b = db:get_column_family("cf_b")
+    
+    -- Write some data
+    local txn = db:begin_txn()
+    txn:put(cf_a, "key1", "value1")
+    txn:put(cf_b, "key2", "value2")
+    txn:commit()
+    txn:free()
+    
+    -- Get database-level stats
+    local db_stats = db:get_db_stats()
+    
+    -- Verify fields exist and have sensible values
+    assert_true(db_stats.num_column_families >= 2, "should have at least 2 column families")
+    assert_true(db_stats.total_memory > 0, "total_memory should be > 0")
+    assert_true(db_stats.resolved_memory_limit > 0, "resolved_memory_limit should be > 0")
+    assert_true(db_stats.memory_pressure_level >= 0, "memory_pressure_level should be >= 0")
+    assert_true(db_stats.global_seq >= 0, "global_seq should be >= 0")
+    assert_true(db_stats.flush_queue_size >= 0, "flush_queue_size should be >= 0")
+    assert_true(db_stats.compaction_queue_size >= 0, "compaction_queue_size should be >= 0")
+    assert_true(db_stats.total_sstable_count >= 0, "total_sstable_count should be >= 0")
+    assert_true(db_stats.total_data_size_bytes >= 0, "total_data_size_bytes should be >= 0")
+    assert_true(db_stats.num_open_sstables >= 0, "num_open_sstables should be >= 0")
+    assert_true(db_stats.txn_memory_bytes ~= nil, "txn_memory_bytes should exist")
+    assert_true(db_stats.total_memtable_bytes ~= nil, "total_memtable_bytes should exist")
+    assert_true(db_stats.total_immutable_count >= 0, "total_immutable_count should be >= 0")
+    assert_true(db_stats.flush_pending_count >= 0, "flush_pending_count should be >= 0")
+    assert_true(db_stats.available_memory ~= nil, "available_memory should exist")
+    
+    db:drop_column_family("cf_a")
+    db:drop_column_family("cf_b")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_get_db_stats")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")

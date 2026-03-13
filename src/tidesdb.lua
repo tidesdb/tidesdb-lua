@@ -180,6 +180,33 @@ ffi.cdef[[
     // Commit hook operations
     int tidesdb_cf_set_commit_hook(void* cf, tidesdb_commit_hook_fn fn, void* ctx);
 
+    // Sync WAL
+    int tidesdb_sync_wal(void* cf);
+
+    // Purge operations
+    int tidesdb_purge_cf(void* cf);
+    int tidesdb_purge(void* db);
+
+    // Database-level statistics
+    typedef struct {
+        int num_column_families;
+        uint64_t total_memory;
+        uint64_t available_memory;
+        size_t resolved_memory_limit;
+        int memory_pressure_level;
+        int flush_pending_count;
+        int64_t total_memtable_bytes;
+        int total_immutable_count;
+        int total_sstable_count;
+        uint64_t total_data_size_bytes;
+        int num_open_sstables;
+        uint64_t global_seq;
+        int64_t txn_memory_bytes;
+        size_t compaction_queue_size;
+        size_t flush_queue_size;
+    } tidesdb_db_stats_t;
+    int tidesdb_get_db_stats(void* db, tidesdb_db_stats_t* stats);
+
     // Backup operations
     int tidesdb_backup(void* db, const char* dir);
     int tidesdb_checkpoint(void* db, const char* checkpoint_dir);
@@ -581,6 +608,16 @@ end
 function ColumnFamily:clear_commit_hook()
     local result = lib.tidesdb_cf_set_commit_hook(self._cf, nil, nil)
     check_result(result, "failed to clear commit hook")
+end
+
+function ColumnFamily:sync_wal()
+    local result = lib.tidesdb_sync_wal(self._cf)
+    check_result(result, "failed to sync WAL")
+end
+
+function ColumnFamily:purge()
+    local result = lib.tidesdb_purge_cf(self._cf)
+    check_result(result, "failed to purge column family")
 end
 
 function ColumnFamily:range_cost(key_a, key_b)
@@ -1022,6 +1059,43 @@ function TidesDB:get_cache_stats()
     }
 end
 
+function TidesDB:purge()
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_purge(self._db)
+    check_result(result, "failed to purge database")
+end
+
+function TidesDB:get_db_stats()
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local c_stats = ffi.new("tidesdb_db_stats_t")
+    local result = lib.tidesdb_get_db_stats(self._db, c_stats)
+    check_result(result, "failed to get database stats")
+
+    return {
+        num_column_families = c_stats.num_column_families,
+        total_memory = tonumber(c_stats.total_memory),
+        available_memory = tonumber(c_stats.available_memory),
+        resolved_memory_limit = tonumber(c_stats.resolved_memory_limit),
+        memory_pressure_level = c_stats.memory_pressure_level,
+        flush_pending_count = c_stats.flush_pending_count,
+        total_memtable_bytes = tonumber(c_stats.total_memtable_bytes),
+        total_immutable_count = c_stats.total_immutable_count,
+        total_sstable_count = c_stats.total_sstable_count,
+        total_data_size_bytes = tonumber(c_stats.total_data_size_bytes),
+        num_open_sstables = c_stats.num_open_sstables,
+        global_seq = tonumber(c_stats.global_seq),
+        txn_memory_bytes = tonumber(c_stats.txn_memory_bytes),
+        compaction_queue_size = tonumber(c_stats.compaction_queue_size),
+        flush_queue_size = tonumber(c_stats.flush_queue_size),
+    }
+end
+
 function TidesDB:backup(dir)
     if self._closed then
         error(TidesDBError.new("Database is closed"))
@@ -1102,6 +1176,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.5"
+tidesdb._VERSION = "0.5.6"
 
 return tidesdb
