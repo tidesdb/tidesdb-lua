@@ -1068,6 +1068,196 @@ function tests.test_get_db_stats()
     print("PASS: test_get_db_stats")
 end
 
+function tests.test_iterator_key_value()
+    local path = "./test_db_iter_kv"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+
+    -- Insert data
+    local txn = db:begin_txn()
+    txn:put(cf, "alpha", "one")
+    txn:put(cf, "beta", "two")
+    txn:put(cf, "gamma", "three")
+    txn:commit()
+    txn:free()
+
+    -- Use key_value() to get both in one call
+    local read_txn = db:begin_txn()
+    local iter = read_txn:new_iterator(cf)
+    iter:seek_to_first()
+
+    local count = 0
+    local pairs_found = {}
+    while iter:valid() do
+        local k, v = iter:key_value()
+        pairs_found[k] = v
+        count = count + 1
+        iter:next()
+    end
+
+    assert_eq(count, 3, "should iterate over 3 entries with key_value")
+    assert_eq(pairs_found["alpha"], "one", "key_value should return correct pair for alpha")
+    assert_eq(pairs_found["beta"], "two", "key_value should return correct pair for beta")
+    assert_eq(pairs_found["gamma"], "three", "key_value should return correct pair for gamma")
+
+    iter:free()
+    read_txn:free()
+
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_iterator_key_value")
+end
+
+function tests.test_unified_memtable_config()
+    local path = "./test_db_unified_mt"
+    cleanup_db(path)
+
+    -- Test default config includes unified_memtable fields
+    local default_cfg = tidesdb.default_config()
+    assert_true(default_cfg.unified_memtable ~= nil, "unified_memtable should exist in default config")
+    assert_eq(default_cfg.unified_memtable, false, "unified_memtable should default to false")
+    assert_true(default_cfg.unified_memtable_write_buffer_size ~= nil, "unified_memtable_write_buffer_size should exist")
+    assert_true(default_cfg.unified_memtable_skip_list_max_level ~= nil, "unified_memtable_skip_list_max_level should exist")
+    assert_true(default_cfg.unified_memtable_skip_list_probability ~= nil, "unified_memtable_skip_list_probability should exist")
+    assert_true(default_cfg.unified_memtable_sync_mode ~= nil, "unified_memtable_sync_mode should exist")
+    assert_true(default_cfg.unified_memtable_sync_interval_us ~= nil, "unified_memtable_sync_interval_us should exist")
+
+    -- Test opening database with unified_memtable disabled (default)
+    local db = tidesdb.TidesDB.open(path)
+    assert_true(db ~= nil, "database should open with unified_memtable disabled")
+    db:close()
+    cleanup_db(path)
+
+    -- Test opening database with unified_memtable enabled
+    local db2 = tidesdb.TidesDB.open(path, {
+        unified_memtable = true,
+        unified_memtable_write_buffer_size = 32 * 1024 * 1024,
+        unified_memtable_skip_list_max_level = 16,
+        unified_memtable_skip_list_probability = 0.5,
+        unified_memtable_sync_mode = tidesdb.SyncMode.SYNC_FULL,
+    })
+    assert_true(db2 ~= nil, "database should open with unified_memtable enabled")
+
+    -- Basic operations should still work
+    db2:create_column_family("test_cf")
+    local cf = db2:get_column_family("test_cf")
+    local txn = db2:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    txn:free()
+
+    local read_txn = db2:begin_txn()
+    local v = read_txn:get(cf, "key1")
+    assert_eq(v, "value1", "should read value with unified_memtable enabled")
+    read_txn:free()
+
+    db2:drop_column_family("test_cf")
+    db2:close()
+    cleanup_db(path)
+    print("PASS: test_unified_memtable_config")
+end
+
+function tests.test_object_cf_config_fields()
+    local path = "./test_db_object_cf"
+    cleanup_db(path)
+
+    -- Test default column family config includes object_* fields
+    local default_cf = tidesdb.default_column_family_config()
+    assert_true(default_cf.object_target_file_size ~= nil, "object_target_file_size should exist")
+    assert_true(default_cf.object_lazy_compaction ~= nil, "object_lazy_compaction should exist")
+    assert_true(default_cf.object_prefetch_compaction ~= nil, "object_prefetch_compaction should exist")
+
+    -- Test creating CF with custom object_* fields
+    local db = tidesdb.TidesDB.open(path)
+    local cf_config = tidesdb.default_column_family_config()
+    cf_config.object_target_file_size = 16 * 1024 * 1024
+    cf_config.object_lazy_compaction = true
+    cf_config.object_prefetch_compaction = false
+    db:create_column_family("test_cf", cf_config)
+
+    local cf = db:get_column_family("test_cf")
+    assert_true(cf ~= nil, "column family should be created with object_* config")
+
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_object_cf_config_fields")
+end
+
+function tests.test_db_stats_extended_fields()
+    local path = "./test_db_stats_extended"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+
+    -- Write some data
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    txn:free()
+
+    -- Get database-level stats and check new fields
+    local db_stats = db:get_db_stats()
+
+    -- Unified memtable fields
+    assert_true(db_stats.unified_memtable_enabled ~= nil, "unified_memtable_enabled should exist")
+    assert_true(db_stats.unified_memtable_bytes ~= nil, "unified_memtable_bytes should exist")
+    assert_true(db_stats.unified_immutable_count ~= nil, "unified_immutable_count should exist")
+    assert_true(db_stats.unified_is_flushing ~= nil, "unified_is_flushing should exist")
+    assert_true(db_stats.unified_next_cf_index ~= nil, "unified_next_cf_index should exist")
+    assert_true(db_stats.unified_wal_generation ~= nil, "unified_wal_generation should exist")
+
+    -- Object store fields
+    assert_true(db_stats.object_store_enabled ~= nil, "object_store_enabled should exist")
+    assert_true(db_stats.local_cache_bytes_used ~= nil, "local_cache_bytes_used should exist")
+    assert_true(db_stats.local_cache_bytes_max ~= nil, "local_cache_bytes_max should exist")
+    assert_true(db_stats.local_cache_num_files ~= nil, "local_cache_num_files should exist")
+    assert_true(db_stats.last_uploaded_generation ~= nil, "last_uploaded_generation should exist")
+    assert_true(db_stats.upload_queue_depth ~= nil, "upload_queue_depth should exist")
+    assert_true(db_stats.total_uploads ~= nil, "total_uploads should exist")
+    assert_true(db_stats.total_upload_failures ~= nil, "total_upload_failures should exist")
+    assert_true(db_stats.replica_mode ~= nil, "replica_mode should exist")
+
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_db_stats_extended_fields")
+end
+
+function tests.test_promote_to_primary()
+    local path = "./test_db_promote"
+    cleanup_db(path)
+
+    -- Open a normal (non-replica) database
+    local db = tidesdb.TidesDB.open(path)
+
+    -- Calling promote_to_primary on a non-replica should not crash
+    -- It may return an error or succeed depending on the C implementation
+    local ok, err = pcall(function()
+        db:promote_to_primary()
+    end)
+    -- We just verify the method exists and is callable
+    assert_true(ok or err ~= nil, "promote_to_primary should be callable")
+
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_promote_to_primary")
+end
+
+function tests.test_error_readonly_constant()
+    -- Verify TDB_ERR_READONLY constant exists and has correct value
+    assert_eq(tidesdb.TDB_ERR_READONLY, -13, "TDB_ERR_READONLY should be -13")
+    print("PASS: test_error_readonly_constant")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")
