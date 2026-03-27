@@ -1232,6 +1232,90 @@ function tests.test_db_stats_extended_fields()
     print("PASS: test_db_stats_extended_fields")
 end
 
+function tests.test_objstore_config_defaults()
+    -- Test default object store config has correct fields and defaults
+    local os_config = tidesdb.default_objstore_config()
+
+    assert_true(os_config.local_cache_max_bytes ~= nil, "local_cache_max_bytes should exist")
+    assert_eq(os_config.local_cache_max_bytes, 0, "local_cache_max_bytes should default to 0")
+    assert_eq(os_config.cache_on_read, true, "cache_on_read should default to true")
+    assert_eq(os_config.cache_on_write, true, "cache_on_write should default to true")
+    assert_eq(os_config.max_concurrent_uploads, 4, "max_concurrent_uploads should default to 4")
+    assert_eq(os_config.max_concurrent_downloads, 8, "max_concurrent_downloads should default to 8")
+    assert_true(os_config.multipart_threshold > 0, "multipart_threshold should be > 0")
+    assert_true(os_config.multipart_part_size > 0, "multipart_part_size should be > 0")
+    assert_eq(os_config.sync_manifest_to_object, true, "sync_manifest_to_object should default to true")
+    assert_eq(os_config.replicate_wal, true, "replicate_wal should default to true")
+    assert_eq(os_config.wal_upload_sync, false, "wal_upload_sync should default to false")
+    assert_true(os_config.wal_sync_threshold_bytes > 0, "wal_sync_threshold_bytes should be > 0")
+    assert_eq(os_config.wal_sync_on_commit, false, "wal_sync_on_commit should default to false")
+    assert_eq(os_config.replica_mode, false, "replica_mode should default to false")
+    assert_true(os_config.replica_sync_interval_us > 0, "replica_sync_interval_us should be > 0")
+    assert_eq(os_config.replica_replay_wal, true, "replica_replay_wal should default to true")
+
+    print("PASS: test_objstore_config_defaults")
+end
+
+function tests.test_objstore_fs_create()
+    local path = "./test_objstore_root"
+    os.execute("rm -rf " .. path)
+    os.execute("mkdir -p " .. path)
+
+    -- Create filesystem connector
+    local store = tidesdb.objstore_fs_create(path)
+    assert_true(store ~= nil, "filesystem object store connector should be created")
+
+    os.execute("rm -rf " .. path)
+    print("PASS: test_objstore_fs_create")
+end
+
+function tests.test_objstore_open_with_fs_connector()
+    local db_path = "./test_db_objstore"
+    local store_path = "./test_objstore_data"
+    local cleanup_db = function(p) os.execute("rm -rf " .. p) end
+    cleanup_db(db_path)
+    cleanup_db(store_path)
+    os.execute("mkdir -p " .. store_path)
+
+    -- Create filesystem connector and config
+    local store = tidesdb.objstore_fs_create(store_path)
+    local os_config = tidesdb.default_objstore_config()
+    os_config.local_cache_max_bytes = 128 * 1024 * 1024
+    os_config.max_concurrent_uploads = 2
+
+    -- Open database with object store
+    local db = tidesdb.TidesDB.open(db_path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+        object_store = store,
+        object_store_config = os_config,
+    })
+    assert_true(db ~= nil, "database should open with object store connector")
+
+    -- Basic operations should work
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+
+    local txn = db:begin_txn()
+    txn:put(cf, "key1", "value1")
+    txn:commit()
+    txn:free()
+
+    local read_txn = db:begin_txn()
+    local v = read_txn:get(cf, "key1")
+    assert_eq(v, "value1", "should read value with object store enabled")
+    read_txn:free()
+
+    -- Verify object store stats reflect enabled state
+    local db_stats = db:get_db_stats()
+    assert_eq(db_stats.object_store_enabled, true, "object_store_enabled should be true")
+
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(db_path)
+    cleanup_db(store_path)
+    print("PASS: test_objstore_open_with_fs_connector")
+end
+
 function tests.test_promote_to_primary()
     local path = "./test_db_promote"
     cleanup_db(path)

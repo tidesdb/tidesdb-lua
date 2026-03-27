@@ -88,6 +88,26 @@ ffi.cdef[[
         int object_prefetch_compaction;
     } tidesdb_column_family_config_t;
 
+    // Object store configuration
+    typedef struct {
+        const char *local_cache_path;
+        size_t local_cache_max_bytes;
+        int cache_on_read;
+        int cache_on_write;
+        int max_concurrent_uploads;
+        int max_concurrent_downloads;
+        size_t multipart_threshold;
+        size_t multipart_part_size;
+        int sync_manifest_to_object;
+        int replicate_wal;
+        int wal_upload_sync;
+        size_t wal_sync_threshold_bytes;
+        int wal_sync_on_commit;
+        int replica_mode;
+        uint64_t replica_sync_interval_us;
+        int replica_replay_wal;
+    } tidesdb_objstore_config_t;
+
     typedef struct {
         const char* db_path;
         int num_flush_threads;
@@ -105,7 +125,7 @@ ffi.cdef[[
         int unified_memtable_sync_mode;
         uint64_t unified_memtable_sync_interval_us;
         void* object_store;
-        void* object_store_config;
+        tidesdb_objstore_config_t* object_store_config;
     } tidesdb_config_t;
 
     typedef struct {
@@ -136,6 +156,10 @@ ffi.cdef[[
         double hit_rate;
         size_t num_partitions;
     } tidesdb_cache_stats_t;
+
+    // Object store functions
+    tidesdb_objstore_config_t tidesdb_objstore_default_config(void);
+    void* tidesdb_objstore_fs_create(const char* root_dir);
 
     // Database functions
     tidesdb_column_family_config_t tidesdb_default_column_family_config(void);
@@ -464,6 +488,59 @@ function tidesdb.default_column_family_config()
         object_lazy_compaction = c_config.object_lazy_compaction ~= 0,
         object_prefetch_compaction = c_config.object_prefetch_compaction ~= 0,
     }
+end
+
+-- Object store configuration
+function tidesdb.default_objstore_config()
+    local c_config = lib.tidesdb_objstore_default_config()
+    return {
+        local_cache_path = c_config.local_cache_path ~= nil and ffi.string(c_config.local_cache_path) or nil,
+        local_cache_max_bytes = tonumber(c_config.local_cache_max_bytes),
+        cache_on_read = c_config.cache_on_read ~= 0,
+        cache_on_write = c_config.cache_on_write ~= 0,
+        max_concurrent_uploads = c_config.max_concurrent_uploads,
+        max_concurrent_downloads = c_config.max_concurrent_downloads,
+        multipart_threshold = tonumber(c_config.multipart_threshold),
+        multipart_part_size = tonumber(c_config.multipart_part_size),
+        sync_manifest_to_object = c_config.sync_manifest_to_object ~= 0,
+        replicate_wal = c_config.replicate_wal ~= 0,
+        wal_upload_sync = c_config.wal_upload_sync ~= 0,
+        wal_sync_threshold_bytes = tonumber(c_config.wal_sync_threshold_bytes),
+        wal_sync_on_commit = c_config.wal_sync_on_commit ~= 0,
+        replica_mode = c_config.replica_mode ~= 0,
+        replica_sync_interval_us = tonumber(c_config.replica_sync_interval_us),
+        replica_replay_wal = c_config.replica_replay_wal ~= 0,
+    }
+end
+
+-- Convert Lua objstore config to C struct
+local function objstore_config_to_c_struct(config)
+    local c_config = ffi.new("tidesdb_objstore_config_t")
+    c_config.local_cache_path = config.local_cache_path
+    c_config.local_cache_max_bytes = config.local_cache_max_bytes or 0
+    c_config.cache_on_read = (config.cache_on_read == nil or config.cache_on_read) and 1 or 0
+    c_config.cache_on_write = (config.cache_on_write == nil or config.cache_on_write) and 1 or 0
+    c_config.max_concurrent_uploads = config.max_concurrent_uploads or 4
+    c_config.max_concurrent_downloads = config.max_concurrent_downloads or 8
+    c_config.multipart_threshold = config.multipart_threshold or 67108864
+    c_config.multipart_part_size = config.multipart_part_size or 8388608
+    c_config.sync_manifest_to_object = (config.sync_manifest_to_object == nil or config.sync_manifest_to_object) and 1 or 0
+    c_config.replicate_wal = (config.replicate_wal == nil or config.replicate_wal) and 1 or 0
+    c_config.wal_upload_sync = config.wal_upload_sync and 1 or 0
+    c_config.wal_sync_threshold_bytes = config.wal_sync_threshold_bytes or 1048576
+    c_config.wal_sync_on_commit = config.wal_sync_on_commit and 1 or 0
+    c_config.replica_mode = config.replica_mode and 1 or 0
+    c_config.replica_sync_interval_us = config.replica_sync_interval_us or 5000000
+    c_config.replica_replay_wal = (config.replica_replay_wal == nil or config.replica_replay_wal) and 1 or 0
+    return c_config
+end
+
+function tidesdb.objstore_fs_create(root_dir)
+    local store = lib.tidesdb_objstore_fs_create(root_dir)
+    if store == nil then
+        error(TidesDBError.new("failed to create filesystem object store connector"))
+    end
+    return store
 end
 
 -- Convert Lua config to C struct
@@ -957,6 +1034,17 @@ function TidesDB.new(config)
     c_config.unified_memtable_sync_mode = config.unified_memtable_sync_mode or tidesdb.SyncMode.SYNC_INTERVAL
     c_config.unified_memtable_sync_interval_us = config.unified_memtable_sync_interval_us or 128000
 
+    -- Object store configuration
+    if config.object_store then
+        c_config.object_store = config.object_store
+    end
+
+    local os_config_holder
+    if config.object_store_config then
+        os_config_holder = objstore_config_to_c_struct(config.object_store_config)
+        c_config.object_store_config = os_config_holder
+    end
+
     local db_ptr = ffi.new("void*[1]")
     local result = lib.tidesdb_open(c_config, db_ptr)
     check_result(result, "failed to open database")
@@ -983,6 +1071,8 @@ function TidesDB.open(path, options)
         unified_memtable_skip_list_probability = options.unified_memtable_skip_list_probability,
         unified_memtable_sync_mode = options.unified_memtable_sync_mode,
         unified_memtable_sync_interval_us = options.unified_memtable_sync_interval_us,
+        object_store = options.object_store,
+        object_store_config = options.object_store_config,
     }
     return TidesDB.new(config)
 end
@@ -1277,6 +1367,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.7"
+tidesdb._VERSION = "0.5.8"
 
 return tidesdb
