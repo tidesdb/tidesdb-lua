@@ -38,6 +38,7 @@ ffi.cdef[[
     static const int TDB_ERR_INVALID_DB = -10;
     static const int TDB_ERR_UNKNOWN = -11;
     static const int TDB_ERR_LOCKED = -12;
+    static const int TDB_ERR_READONLY = -13;
 
     // Structures
     static const int TDB_MAX_CF_NAME_LEN = 128;
@@ -82,6 +83,9 @@ ffi.cdef[[
         int use_btree;
         tidesdb_commit_hook_fn commit_hook_fn;
         void *commit_hook_ctx;
+        size_t object_target_file_size;
+        int object_lazy_compaction;
+        int object_prefetch_compaction;
     } tidesdb_column_family_config_t;
 
     typedef struct {
@@ -94,6 +98,14 @@ ffi.cdef[[
         int log_to_file;
         size_t log_truncation_at;
         size_t max_memory_usage;
+        int unified_memtable;
+        size_t unified_memtable_write_buffer_size;
+        int unified_memtable_skip_list_max_level;
+        float unified_memtable_skip_list_probability;
+        int unified_memtable_sync_mode;
+        uint64_t unified_memtable_sync_interval_us;
+        void* object_store;
+        void* object_store_config;
     } tidesdb_config_t;
 
     typedef struct {
@@ -204,6 +216,22 @@ ffi.cdef[[
         int64_t txn_memory_bytes;
         size_t compaction_queue_size;
         size_t flush_queue_size;
+        int unified_memtable_enabled;
+        int64_t unified_memtable_bytes;
+        int unified_immutable_count;
+        int unified_is_flushing;
+        uint32_t unified_next_cf_index;
+        uint64_t unified_wal_generation;
+        int object_store_enabled;
+        const char* object_store_connector;
+        size_t local_cache_bytes_used;
+        size_t local_cache_bytes_max;
+        int local_cache_num_files;
+        uint64_t last_uploaded_generation;
+        size_t upload_queue_depth;
+        uint64_t total_uploads;
+        uint64_t total_upload_failures;
+        int replica_mode;
     } tidesdb_db_stats_t;
     int tidesdb_get_db_stats(void* db, tidesdb_db_stats_t* stats);
 
@@ -228,6 +256,12 @@ ffi.cdef[[
     int tidesdb_comparator_int64(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
     int tidesdb_comparator_reverse_memcmp(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
     int tidesdb_comparator_case_insensitive(const uint8_t* key1, size_t key1_size, const uint8_t* key2, size_t key2_size, void* ctx);
+
+    // Iterator combined key-value
+    int tidesdb_iter_key_value(void* iter, uint8_t** key, size_t* key_size, uint8_t** value, size_t* value_size);
+
+    // Replica promotion
+    int tidesdb_promote_to_primary(void* db);
 
     // Memory management
     void tidesdb_free(void* ptr);
@@ -293,6 +327,7 @@ tidesdb.TDB_ERR_MEMORY_LIMIT = -9
 tidesdb.TDB_ERR_INVALID_DB = -10
 tidesdb.TDB_ERR_UNKNOWN = -11
 tidesdb.TDB_ERR_LOCKED = -12
+tidesdb.TDB_ERR_READONLY = -13
 
 -- Compression algorithms
 tidesdb.CompressionAlgorithm = {
@@ -343,6 +378,7 @@ local error_messages = {
     [tidesdb.TDB_ERR_INVALID_DB] = "invalid database handle",
     [tidesdb.TDB_ERR_UNKNOWN] = "unknown error",
     [tidesdb.TDB_ERR_LOCKED] = "database is locked",
+    [tidesdb.TDB_ERR_READONLY] = "database is read-only",
 }
 
 -- TidesDBError class
@@ -391,6 +427,12 @@ function tidesdb.default_config()
         log_to_file = false,
         log_truncation_at = 24 * 1024 * 1024,
         max_memory_usage = 0,
+        unified_memtable = false,
+        unified_memtable_write_buffer_size = 64 * 1024 * 1024,
+        unified_memtable_skip_list_max_level = 12,
+        unified_memtable_skip_list_probability = 0.25,
+        unified_memtable_sync_mode = tidesdb.SyncMode.SYNC_INTERVAL,
+        unified_memtable_sync_interval_us = 128000,
     }
 end
 
@@ -418,6 +460,9 @@ function tidesdb.default_column_family_config()
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
         use_btree = c_config.use_btree ~= 0,
+        object_target_file_size = tonumber(c_config.object_target_file_size),
+        object_lazy_compaction = c_config.object_lazy_compaction ~= 0,
+        object_prefetch_compaction = c_config.object_prefetch_compaction ~= 0,
     }
 end
 
@@ -452,6 +497,9 @@ local function config_to_c_struct(config, cf_name)
     c_config.l1_file_count_trigger = config.l1_file_count_trigger or 4
     c_config.l0_queue_stall_threshold = config.l0_queue_stall_threshold or 20
     c_config.use_btree = config.use_btree and 1 or 0
+    c_config.object_target_file_size = config.object_target_file_size or 0
+    c_config.object_lazy_compaction = config.object_lazy_compaction and 1 or 0
+    c_config.object_prefetch_compaction = config.object_prefetch_compaction and 1 or 0
 
     local name = config.comparator_name or "memcmp"
     local name_len = math.min(#name, 63)
@@ -547,6 +595,19 @@ function Iterator:value()
     local result = lib.tidesdb_iter_value(self._iter, value_ptr, value_size)
     check_result(result, "failed to get value")
     return ffi.string(value_ptr[0], value_size[0])
+end
+
+function Iterator:key_value()
+    if self._closed then
+        error(TidesDBError.new("Iterator is closed"))
+    end
+    local key_ptr = ffi.new("uint8_t*[1]")
+    local key_size = ffi.new("size_t[1]")
+    local value_ptr = ffi.new("uint8_t*[1]")
+    local value_size = ffi.new("size_t[1]")
+    local result = lib.tidesdb_iter_key_value(self._iter, key_ptr, key_size, value_ptr, value_size)
+    check_result(result, "failed to get key-value")
+    return ffi.string(key_ptr[0], key_size[0]), ffi.string(value_ptr[0], value_size[0])
 end
 
 function Iterator:close()
@@ -889,6 +950,12 @@ function TidesDB.new(config)
     c_config.log_to_file = config.log_to_file and 1 or 0
     c_config.log_truncation_at = config.log_truncation_at or 24 * 1024 * 1024
     c_config.max_memory_usage = config.max_memory_usage or 0
+    c_config.unified_memtable = config.unified_memtable and 1 or 0
+    c_config.unified_memtable_write_buffer_size = config.unified_memtable_write_buffer_size or 64 * 1024 * 1024
+    c_config.unified_memtable_skip_list_max_level = config.unified_memtable_skip_list_max_level or 12
+    c_config.unified_memtable_skip_list_probability = config.unified_memtable_skip_list_probability or 0.25
+    c_config.unified_memtable_sync_mode = config.unified_memtable_sync_mode or tidesdb.SyncMode.SYNC_INTERVAL
+    c_config.unified_memtable_sync_interval_us = config.unified_memtable_sync_interval_us or 128000
 
     local db_ptr = ffi.new("void*[1]")
     local result = lib.tidesdb_open(c_config, db_ptr)
@@ -910,6 +977,12 @@ function TidesDB.open(path, options)
         log_to_file = options.log_to_file or false,
         log_truncation_at = options.log_truncation_at or 24 * 1024 * 1024,
         max_memory_usage = options.max_memory_usage or 0,
+        unified_memtable = options.unified_memtable or false,
+        unified_memtable_write_buffer_size = options.unified_memtable_write_buffer_size,
+        unified_memtable_skip_list_max_level = options.unified_memtable_skip_list_max_level,
+        unified_memtable_skip_list_probability = options.unified_memtable_skip_list_probability,
+        unified_memtable_sync_mode = options.unified_memtable_sync_mode,
+        unified_memtable_sync_interval_us = options.unified_memtable_sync_interval_us,
     }
     return TidesDB.new(config)
 end
@@ -1093,6 +1166,22 @@ function TidesDB:get_db_stats()
         txn_memory_bytes = tonumber(c_stats.txn_memory_bytes),
         compaction_queue_size = tonumber(c_stats.compaction_queue_size),
         flush_queue_size = tonumber(c_stats.flush_queue_size),
+        unified_memtable_enabled = c_stats.unified_memtable_enabled ~= 0,
+        unified_memtable_bytes = tonumber(c_stats.unified_memtable_bytes),
+        unified_immutable_count = c_stats.unified_immutable_count,
+        unified_is_flushing = c_stats.unified_is_flushing ~= 0,
+        unified_next_cf_index = tonumber(c_stats.unified_next_cf_index),
+        unified_wal_generation = tonumber(c_stats.unified_wal_generation),
+        object_store_enabled = c_stats.object_store_enabled ~= 0,
+        object_store_connector = c_stats.object_store_connector ~= nil and ffi.string(c_stats.object_store_connector) or nil,
+        local_cache_bytes_used = tonumber(c_stats.local_cache_bytes_used),
+        local_cache_bytes_max = tonumber(c_stats.local_cache_bytes_max),
+        local_cache_num_files = c_stats.local_cache_num_files,
+        last_uploaded_generation = tonumber(c_stats.last_uploaded_generation),
+        upload_queue_depth = tonumber(c_stats.upload_queue_depth),
+        total_uploads = tonumber(c_stats.total_uploads),
+        total_upload_failures = tonumber(c_stats.total_upload_failures),
+        replica_mode = c_stats.replica_mode ~= 0,
     }
 end
 
@@ -1136,6 +1225,15 @@ function TidesDB:get_comparator(name)
     return fn_ptr[0], ctx_ptr[0]
 end
 
+function TidesDB:promote_to_primary()
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_promote_to_primary(self._db)
+    check_result(result, "failed to promote to primary")
+end
+
 tidesdb.TidesDB = TidesDB
 
 -- Configuration file operations
@@ -1166,6 +1264,9 @@ function tidesdb.load_config_from_ini(ini_file, section_name)
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
         use_btree = c_config.use_btree ~= 0,
+        object_target_file_size = tonumber(c_config.object_target_file_size),
+        object_lazy_compaction = c_config.object_lazy_compaction ~= 0,
+        object_prefetch_compaction = c_config.object_prefetch_compaction ~= 0,
     }
 end
 
@@ -1176,6 +1277,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.6"
+tidesdb._VERSION = "0.5.7"
 
 return tidesdb
