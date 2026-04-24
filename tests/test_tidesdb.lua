@@ -1167,14 +1167,13 @@ function tests.test_object_cf_config_fields()
 
     -- Test default column family config includes object_* fields
     local default_cf = tidesdb.default_column_family_config()
-    assert_true(default_cf.object_target_file_size ~= nil, "object_target_file_size should exist")
     assert_true(default_cf.object_lazy_compaction ~= nil, "object_lazy_compaction should exist")
     assert_true(default_cf.object_prefetch_compaction ~= nil, "object_prefetch_compaction should exist")
+    assert_true(default_cf.object_target_file_size == nil, "object_target_file_size should be retired from public API")
 
     -- Test creating CF with custom object_* fields
     local db = tidesdb.TidesDB.open(path)
     local cf_config = tidesdb.default_column_family_config()
-    cf_config.object_target_file_size = 16 * 1024 * 1024
     cf_config.object_lazy_compaction = true
     cf_config.object_prefetch_compaction = false
     db:create_column_family("test_cf", cf_config)
@@ -1340,6 +1339,55 @@ function tests.test_error_readonly_constant()
     -- Verify TDB_ERR_READONLY constant exists and has correct value
     assert_eq(tidesdb.TDB_ERR_READONLY, -13, "TDB_ERR_READONLY should be -13")
     print("PASS: test_error_readonly_constant")
+end
+
+function tests.test_txn_single_delete()
+    local path = "./test_db_single_delete"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path)
+    db:create_column_family("test_cf")
+    local cf = db:get_column_family("test_cf")
+
+    -- Insert a key that will be single-deleted
+    local txn = db:begin_txn()
+    txn:put(cf, "sd_key", "sd_value")
+    txn:put(cf, "keep_key", "keep_value")
+    txn:commit()
+    txn:free()
+
+    -- Verify the key exists
+    local read_txn = db:begin_txn()
+    local v = read_txn:get(cf, "sd_key")
+    assert_eq(v, "sd_value", "sd_key should exist before single_delete")
+    read_txn:free()
+
+    -- Single-delete the key
+    local del_txn = db:begin_txn()
+    del_txn:single_delete(cf, "sd_key")
+    del_txn:commit()
+    del_txn:free()
+
+    -- Verify the key is gone
+    local verify_txn = db:begin_txn()
+    local err = assert_error(function()
+        verify_txn:get(cf, "sd_key")
+    end, "sd_key should not exist after single_delete")
+    local kept = verify_txn:get(cf, "keep_key")
+    assert_eq(kept, "keep_value", "unrelated key should remain after single_delete")
+    verify_txn:free()
+
+    -- single_delete on a closed transaction should raise
+    local closed_txn = db:begin_txn()
+    closed_txn:free()
+    local closed_err = assert_error(function()
+        closed_txn:single_delete(cf, "any_key")
+    end, "single_delete on closed transaction should error")
+
+    db:drop_column_family("test_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_txn_single_delete")
 end
 
 -- Run all tests
