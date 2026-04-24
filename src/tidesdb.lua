@@ -83,7 +83,7 @@ ffi.cdef[[
         int use_btree;
         tidesdb_commit_hook_fn commit_hook_fn;
         void *commit_hook_ctx;
-        size_t object_target_file_size;
+        size_t object_target_file_size; /* reserved, retired from public API */
         int object_lazy_compaction;
         int object_prefetch_compaction;
     } tidesdb_column_family_config_t;
@@ -182,6 +182,7 @@ ffi.cdef[[
     int tidesdb_txn_put(void* txn, void* cf, const uint8_t* key, size_t key_len, const uint8_t* value, size_t value_len, int ttl);
     int tidesdb_txn_get(void* txn, void* cf, const uint8_t* key, size_t key_len, uint8_t** value, size_t* value_len);
     int tidesdb_txn_delete(void* txn, void* cf, const uint8_t* key, size_t key_len);
+    int tidesdb_txn_single_delete(void* txn, void* cf, const uint8_t* key, size_t key_len);
     int tidesdb_txn_commit(void* txn);
     int tidesdb_txn_rollback(void* txn);
     void tidesdb_txn_free(void* txn);
@@ -484,7 +485,6 @@ function tidesdb.default_column_family_config()
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
         use_btree = c_config.use_btree ~= 0,
-        object_target_file_size = tonumber(c_config.object_target_file_size),
         object_lazy_compaction = c_config.object_lazy_compaction ~= 0,
         object_prefetch_compaction = c_config.object_prefetch_compaction ~= 0,
     }
@@ -574,7 +574,6 @@ local function config_to_c_struct(config, cf_name)
     c_config.l1_file_count_trigger = config.l1_file_count_trigger or 4
     c_config.l0_queue_stall_threshold = config.l0_queue_stall_threshold or 20
     c_config.use_btree = config.use_btree and 1 or 0
-    c_config.object_target_file_size = config.object_target_file_size or 0
     c_config.object_lazy_compaction = config.object_lazy_compaction and 1 or 0
     c_config.object_prefetch_compaction = config.object_prefetch_compaction and 1 or 0
 
@@ -903,6 +902,19 @@ function Transaction:delete(cf, key)
     local key_len = #key
     local result = lib.tidesdb_txn_delete(self._txn, cf._cf, key, key_len)
     check_result(result, "failed to delete key")
+end
+
+function Transaction:single_delete(cf, key)
+    if self._closed then
+        error(TidesDBError.new("Transaction is closed"))
+    end
+    if self._committed then
+        error(TidesDBError.new("Transaction already committed"))
+    end
+
+    local key_len = #key
+    local result = lib.tidesdb_txn_single_delete(self._txn, cf._cf, key, key_len)
+    check_result(result, "failed to single delete key")
 end
 
 function Transaction:commit()
@@ -1354,7 +1366,6 @@ function tidesdb.load_config_from_ini(ini_file, section_name)
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
         use_btree = c_config.use_btree ~= 0,
-        object_target_file_size = tonumber(c_config.object_target_file_size),
         object_lazy_compaction = c_config.object_lazy_compaction ~= 0,
         object_prefetch_compaction = c_config.object_prefetch_compaction ~= 0,
     }
@@ -1367,6 +1378,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.5.8"
+tidesdb._VERSION = "0.6.0"
 
 return tidesdb
