@@ -80,6 +80,8 @@ ffi.cdef[[
         uint64_t min_disk_space;
         int l1_file_count_trigger;
         int l0_queue_stall_threshold;
+        double tombstone_density_trigger;
+        uint64_t tombstone_density_min_entries;
         int use_btree;
         tidesdb_commit_hook_fn commit_hook_fn;
         void *commit_hook_ctx;
@@ -126,6 +128,7 @@ ffi.cdef[[
         uint64_t unified_memtable_sync_interval_us;
         void* object_store;
         tidesdb_objstore_config_t* object_store_config;
+        int max_concurrent_flushes;
     } tidesdb_config_t;
 
     typedef struct {
@@ -145,6 +148,11 @@ ffi.cdef[[
         uint64_t btree_total_nodes;
         uint32_t btree_max_height;
         double btree_avg_height;
+        uint64_t total_tombstones;
+        double tombstone_ratio;
+        uint64_t* level_tombstone_counts;
+        double max_sst_density;
+        int max_sst_density_level;
     } tidesdb_stats_t;
 
     typedef struct {
@@ -206,6 +214,8 @@ ffi.cdef[[
 
     // Column family operations
     int tidesdb_compact(void* cf);
+    int tidesdb_compact_range(void* cf, const uint8_t* start_key, size_t start_key_size,
+                              const uint8_t* end_key, size_t end_key_size);
     int tidesdb_flush_memtable(void* cf);
     int tidesdb_is_flushing(void* cf);
     int tidesdb_is_compacting(void* cf);
@@ -442,22 +452,24 @@ end
 
 -- Default configurations
 function tidesdb.default_config()
+    local c_config = lib.tidesdb_default_config()
     return {
         db_path = "",
-        num_flush_threads = 2,
-        num_compaction_threads = 2,
-        log_level = tidesdb.LogLevel.LOG_INFO,
-        block_cache_size = 64 * 1024 * 1024,
-        max_open_sstables = 256,
-        log_to_file = false,
-        log_truncation_at = 24 * 1024 * 1024,
-        max_memory_usage = 0,
-        unified_memtable = false,
-        unified_memtable_write_buffer_size = 64 * 1024 * 1024,
-        unified_memtable_skip_list_max_level = 12,
-        unified_memtable_skip_list_probability = 0.25,
-        unified_memtable_sync_mode = tidesdb.SyncMode.SYNC_INTERVAL,
-        unified_memtable_sync_interval_us = 128000,
+        num_flush_threads = c_config.num_flush_threads,
+        num_compaction_threads = c_config.num_compaction_threads,
+        log_level = c_config.log_level,
+        block_cache_size = tonumber(c_config.block_cache_size),
+        max_open_sstables = tonumber(c_config.max_open_sstables),
+        log_to_file = c_config.log_to_file ~= 0,
+        log_truncation_at = tonumber(c_config.log_truncation_at),
+        max_memory_usage = tonumber(c_config.max_memory_usage),
+        unified_memtable = c_config.unified_memtable ~= 0,
+        unified_memtable_write_buffer_size = tonumber(c_config.unified_memtable_write_buffer_size),
+        unified_memtable_skip_list_max_level = c_config.unified_memtable_skip_list_max_level,
+        unified_memtable_skip_list_probability = c_config.unified_memtable_skip_list_probability,
+        unified_memtable_sync_mode = c_config.unified_memtable_sync_mode,
+        unified_memtable_sync_interval_us = tonumber(c_config.unified_memtable_sync_interval_us),
+        max_concurrent_flushes = c_config.max_concurrent_flushes,
     }
 end
 
@@ -484,6 +496,8 @@ function tidesdb.default_column_family_config()
         min_disk_space = tonumber(c_config.min_disk_space),
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
+        tombstone_density_trigger = c_config.tombstone_density_trigger,
+        tombstone_density_min_entries = tonumber(c_config.tombstone_density_min_entries),
         use_btree = c_config.use_btree ~= 0,
         object_lazy_compaction = c_config.object_lazy_compaction ~= 0,
         object_prefetch_compaction = c_config.object_prefetch_compaction ~= 0,
@@ -573,6 +587,8 @@ local function config_to_c_struct(config, cf_name)
     c_config.min_disk_space = config.min_disk_space or 100 * 1024 * 1024
     c_config.l1_file_count_trigger = config.l1_file_count_trigger or 4
     c_config.l0_queue_stall_threshold = config.l0_queue_stall_threshold or 20
+    c_config.tombstone_density_trigger = config.tombstone_density_trigger or 0.0
+    c_config.tombstone_density_min_entries = config.tombstone_density_min_entries or 1024
     c_config.use_btree = config.use_btree and 1 or 0
     c_config.object_lazy_compaction = config.object_lazy_compaction and 1 or 0
     c_config.object_prefetch_compaction = config.object_prefetch_compaction and 1 or 0
@@ -715,6 +731,21 @@ function ColumnFamily:compact()
     check_result(result, "failed to compact column family")
 end
 
+function ColumnFamily:compact_range(start_key, end_key)
+    local start_ptr, start_len = nil, 0
+    if start_key ~= nil and #start_key > 0 then
+        start_ptr = start_key
+        start_len = #start_key
+    end
+    local end_ptr, end_len = nil, 0
+    if end_key ~= nil and #end_key > 0 then
+        end_ptr = end_key
+        end_len = #end_key
+    end
+    local result = lib.tidesdb_compact_range(self._cf, start_ptr, start_len, end_ptr, end_len)
+    check_result(result, "failed to compact range")
+end
+
 function ColumnFamily:flush_memtable()
     local result = lib.tidesdb_flush_memtable(self._cf)
     check_result(result, "failed to flush memtable")
@@ -810,6 +841,8 @@ function ColumnFamily:get_stats()
             min_disk_space = tonumber(c_cfg.min_disk_space),
             l1_file_count_trigger = c_cfg.l1_file_count_trigger,
             l0_queue_stall_threshold = c_cfg.l0_queue_stall_threshold,
+            tombstone_density_trigger = c_cfg.tombstone_density_trigger,
+            tombstone_density_min_entries = tonumber(c_cfg.tombstone_density_min_entries),
             use_btree = c_cfg.use_btree ~= 0,
         }
     end
@@ -818,6 +851,13 @@ function ColumnFamily:get_stats()
     if c_stats.num_levels > 0 and c_stats.level_key_counts ~= nil then
         for i = 0, c_stats.num_levels - 1 do
             table.insert(level_key_counts, tonumber(c_stats.level_key_counts[i]))
+        end
+    end
+
+    local level_tombstone_counts = {}
+    if c_stats.num_levels > 0 and c_stats.level_tombstone_counts ~= nil then
+        for i = 0, c_stats.num_levels - 1 do
+            table.insert(level_tombstone_counts, tonumber(c_stats.level_tombstone_counts[i]))
         end
     end
 
@@ -838,6 +878,11 @@ function ColumnFamily:get_stats()
         btree_total_nodes = tonumber(c_stats.btree_total_nodes),
         btree_max_height = c_stats.btree_max_height,
         btree_avg_height = c_stats.btree_avg_height,
+        total_tombstones = tonumber(c_stats.total_tombstones),
+        tombstone_ratio = c_stats.tombstone_ratio,
+        level_tombstone_counts = level_tombstone_counts,
+        max_sst_density = c_stats.max_sst_density,
+        max_sst_density_level = c_stats.max_sst_density_level,
     }
 
     lib.tidesdb_free_stats(stats_ptr[0])
@@ -1045,6 +1090,7 @@ function TidesDB.new(config)
     c_config.unified_memtable_skip_list_probability = config.unified_memtable_skip_list_probability or 0.25
     c_config.unified_memtable_sync_mode = config.unified_memtable_sync_mode or tidesdb.SyncMode.SYNC_INTERVAL
     c_config.unified_memtable_sync_interval_us = config.unified_memtable_sync_interval_us or 128000
+    c_config.max_concurrent_flushes = config.max_concurrent_flushes or 0
 
     -- Object store configuration
     if config.object_store then
@@ -1083,6 +1129,7 @@ function TidesDB.open(path, options)
         unified_memtable_skip_list_probability = options.unified_memtable_skip_list_probability,
         unified_memtable_sync_mode = options.unified_memtable_sync_mode,
         unified_memtable_sync_interval_us = options.unified_memtable_sync_interval_us,
+        max_concurrent_flushes = options.max_concurrent_flushes,
         object_store = options.object_store,
         object_store_config = options.object_store_config,
     }
@@ -1365,6 +1412,8 @@ function tidesdb.load_config_from_ini(ini_file, section_name)
         min_disk_space = tonumber(c_config.min_disk_space),
         l1_file_count_trigger = c_config.l1_file_count_trigger,
         l0_queue_stall_threshold = c_config.l0_queue_stall_threshold,
+        tombstone_density_trigger = c_config.tombstone_density_trigger,
+        tombstone_density_min_entries = tonumber(c_config.tombstone_density_min_entries),
         use_btree = c_config.use_btree ~= 0,
         object_lazy_compaction = c_config.object_lazy_compaction ~= 0,
         object_prefetch_compaction = c_config.object_prefetch_compaction ~= 0,
@@ -1378,6 +1427,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.6.0"
+tidesdb._VERSION = "0.7.0"
 
 return tidesdb
