@@ -1390,6 +1390,165 @@ function tests.test_txn_single_delete()
     print("PASS: test_txn_single_delete")
 end
 
+function tests.test_tombstone_cf_config_roundtrip()
+    local path = "./test_db_tombstone_cfg"
+    cleanup_db(path)
+
+    -- Defaults from C should be sensible
+    local defaults = tidesdb.default_column_family_config()
+    assert_true(defaults.tombstone_density_trigger ~= nil, "tombstone_density_trigger should exist in defaults")
+    assert_true(defaults.tombstone_density_min_entries ~= nil, "tombstone_density_min_entries should exist in defaults")
+    assert_true(defaults.tombstone_density_min_entries >= 1, "tombstone_density_min_entries default should be >= 1")
+
+    local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
+    local cf_config = tidesdb.default_column_family_config()
+    cf_config.tombstone_density_trigger = 0.5
+    cf_config.tombstone_density_min_entries = 256
+    db:create_column_family("ts_cf", cf_config)
+
+    local cf = db:get_column_family("ts_cf")
+    local stats = cf:get_stats()
+    assert_true(stats.config ~= nil, "stats.config should exist")
+    assert_eq(stats.config.tombstone_density_trigger, 0.5, "tombstone_density_trigger round-trip")
+    assert_eq(stats.config.tombstone_density_min_entries, 256, "tombstone_density_min_entries round-trip")
+
+    db:drop_column_family("ts_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_tombstone_cf_config_roundtrip")
+end
+
+function tests.test_tombstone_stats_after_deletes()
+    local path = "./test_db_tombstone_stats"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
+    db:create_column_family("ts_cf")
+    local cf = db:get_column_family("ts_cf")
+
+    -- Insert 100 keys, flush, delete half, flush
+    local n = 100
+    local insert_txn = db:begin_txn()
+    for i = 1, n do
+        insert_txn:put(cf, string.format("key:%04d", i), string.format("value:%04d", i))
+    end
+    insert_txn:commit()
+    insert_txn:free()
+    cf:flush_memtable()
+
+    local del_txn = db:begin_txn()
+    for i = 1, n / 2 do
+        del_txn:delete(cf, string.format("key:%04d", i))
+    end
+    del_txn:commit()
+    del_txn:free()
+    cf:flush_memtable()
+
+    -- Brief wait for flush to land
+    local deadline = os.time() + 5
+    while cf:is_flushing() and os.time() < deadline do
+        os.execute("sleep 0.1")
+    end
+
+    local stats = cf:get_stats()
+    assert_true(stats.total_tombstones ~= nil, "total_tombstones should exist")
+    assert_true(stats.total_tombstones > 0, "total_tombstones should be > 0 after deletes")
+    assert_true(stats.tombstone_ratio ~= nil, "tombstone_ratio should exist")
+    assert_true(stats.tombstone_ratio >= 0 and stats.tombstone_ratio <= 1, "tombstone_ratio in [0, 1]")
+    assert_true(stats.max_sst_density ~= nil, "max_sst_density should exist")
+    assert_true(stats.max_sst_density >= 0 and stats.max_sst_density <= 1, "max_sst_density in [0, 1]")
+    assert_true(stats.max_sst_density_level ~= nil, "max_sst_density_level should exist")
+    assert_true(stats.level_tombstone_counts ~= nil, "level_tombstone_counts should exist")
+    assert_eq(#stats.level_tombstone_counts, stats.num_levels, "level_tombstone_counts length should match num_levels")
+
+    db:drop_column_family("ts_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_tombstone_stats_after_deletes")
+end
+
+function tests.test_compact_range()
+    local path = "./test_db_compact_range"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
+    db:create_column_family("cr_cf")
+    local cf = db:get_column_family("cr_cf")
+
+    -- Insert several batches and flush each to create multiple SSTables
+    for batch = 1, 4 do
+        local txn = db:begin_txn()
+        for i = 1, 50 do
+            local k = string.format("key:%02d:%04d", batch, i)
+            txn:put(cf, k, string.format("v:%d", i))
+        end
+        txn:commit()
+        txn:free()
+        cf:flush_memtable()
+    end
+
+    -- Wait briefly for flushes to settle
+    local deadline = os.time() + 5
+    while cf:is_flushing() and os.time() < deadline do
+        os.execute("sleep 0.1")
+    end
+
+    -- Narrow range compaction succeeds
+    cf:compact_range("key:01:0001", "key:02:0050")
+
+    -- A key outside the range should still be readable and unchanged
+    local read_txn = db:begin_txn()
+    local v = read_txn:get(cf, "key:04:0010")
+    assert_eq(v, "v:10", "key outside compacted range should be unchanged")
+    read_txn:free()
+
+    -- Both endpoints empty/nil should be rejected with INVALID_ARGS
+    local err = assert_error(function()
+        cf:compact_range(nil, nil)
+    end, "both nil endpoints should fail")
+    err = assert_error(function()
+        cf:compact_range("", "")
+    end, "both empty endpoints should fail")
+
+    -- Unbounded one side should be accepted
+    cf:compact_range(nil, "key:01:0050")
+    cf:compact_range("key:04:0001", nil)
+
+    db:drop_column_family("cr_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_compact_range")
+end
+
+function tests.test_max_concurrent_flushes()
+    local path = "./test_db_max_flushes"
+    cleanup_db(path)
+
+    -- default_config() should source from C, so max_concurrent_flushes should be non-zero
+    local defaults = tidesdb.default_config()
+    assert_true(defaults.max_concurrent_flushes ~= nil, "max_concurrent_flushes should exist in default_config")
+    assert_true(defaults.max_concurrent_flushes > 0, "default max_concurrent_flushes should be > 0")
+
+    -- Open with MaxConcurrentFlushes = 1; basic put + flush should work
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+        max_concurrent_flushes = 1,
+    })
+    db:create_column_family("mcf_cf")
+    local cf = db:get_column_family("mcf_cf")
+
+    local txn = db:begin_txn()
+    txn:put(cf, "k", "v")
+    txn:commit()
+    txn:free()
+    cf:flush_memtable()
+
+    db:drop_column_family("mcf_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_max_concurrent_flushes")
+end
+
 -- Run all tests
 local function run_tests()
     print("Running TidesDB Lua tests...")
