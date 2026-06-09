@@ -39,6 +39,7 @@ ffi.cdef[[
     static const int TDB_ERR_UNKNOWN = -11;
     static const int TDB_ERR_LOCKED = -12;
     static const int TDB_ERR_READONLY = -13;
+    static const int TDB_ERR_BUSY = -14;
 
     // Structures
     static const int TDB_MAX_CF_NAME_LEN = 128;
@@ -129,6 +130,7 @@ ffi.cdef[[
         void* object_store;
         tidesdb_objstore_config_t* object_store_config;
         int max_concurrent_flushes;
+        int finish_compactions_on_close;
     } tidesdb_config_t;
 
     typedef struct {
@@ -153,6 +155,13 @@ ffi.cdef[[
         uint64_t* level_tombstone_counts;
         double max_sst_density;
         int max_sst_density_level;
+        uint64_t wal_bytes_written;
+        uint64_t flush_bytes_written;
+        uint64_t compaction_bytes_written;
+        uint64_t compaction_bytes_read;
+        uint64_t user_bytes_written;
+        uint64_t flush_count;
+        uint64_t compaction_count;
     } tidesdb_stats_t;
 
     typedef struct {
@@ -168,6 +177,37 @@ ffi.cdef[[
     // Object store functions
     tidesdb_objstore_config_t tidesdb_objstore_default_config(void);
     void* tidesdb_objstore_fs_create(const char* root_dir);
+    void* tidesdb_objstore_s3_create(const char* endpoint, const char* bucket,
+                                     const char* prefix, const char* access_key,
+                                     const char* secret_key, const char* region,
+                                     int use_ssl, int use_path_style);
+
+    // Full S3 connector configuration (TLS + multipart tuning)
+    typedef struct {
+        const char* endpoint;
+        const char* bucket;
+        const char* prefix;
+        const char* access_key;
+        const char* secret_key;
+        const char* region;
+        int use_ssl;
+        int use_path_style;
+        const char* tls_ca_path;
+        int tls_insecure_skip_verify;
+        size_t multipart_threshold;
+        size_t multipart_part_size;
+    } tidesdb_objstore_s3_config_t;
+    void* tidesdb_objstore_s3_create_config(const tidesdb_objstore_s3_config_t* config);
+
+    // Initialization and custom allocator support
+    typedef void* (*tidesdb_malloc_fn)(size_t size);
+    typedef void* (*tidesdb_calloc_fn)(size_t count, size_t size);
+    typedef void* (*tidesdb_realloc_fn)(void* ptr, size_t size);
+    typedef void (*tidesdb_free_fn)(void* ptr);
+    int tidesdb_init(tidesdb_malloc_fn malloc_fn, tidesdb_calloc_fn calloc_fn,
+                     tidesdb_realloc_fn realloc_fn, tidesdb_free_fn free_fn);
+    void tidesdb_finalize(void);
+    long tidesdb_raise_open_file_limit(long desired);
 
     // Database functions
     tidesdb_column_family_config_t tidesdb_default_column_family_config(void);
@@ -234,6 +274,9 @@ ffi.cdef[[
     int tidesdb_purge_cf(void* cf);
     int tidesdb_purge(void* db);
 
+    // Cancel background work (fast shutdown)
+    int tidesdb_cancel_background_work(void* db);
+
     // Database-level statistics
     typedef struct {
         int num_column_families;
@@ -267,6 +310,14 @@ ffi.cdef[[
         uint64_t total_uploads;
         uint64_t total_upload_failures;
         int replica_mode;
+        uint64_t uwal_bytes_written;
+        uint64_t wal_bytes_written;
+        uint64_t flush_bytes_written;
+        uint64_t compaction_bytes_written;
+        uint64_t compaction_bytes_read;
+        uint64_t user_bytes_written;
+        uint64_t flush_count;
+        uint64_t compaction_count;
     } tidesdb_db_stats_t;
     int tidesdb_get_db_stats(void* db, tidesdb_db_stats_t* stats);
 
@@ -363,6 +414,7 @@ tidesdb.TDB_ERR_INVALID_DB = -10
 tidesdb.TDB_ERR_UNKNOWN = -11
 tidesdb.TDB_ERR_LOCKED = -12
 tidesdb.TDB_ERR_READONLY = -13
+tidesdb.TDB_ERR_BUSY = -14
 
 -- Compression algorithms
 tidesdb.CompressionAlgorithm = {
@@ -414,6 +466,7 @@ local error_messages = {
     [tidesdb.TDB_ERR_UNKNOWN] = "unknown error",
     [tidesdb.TDB_ERR_LOCKED] = "database is locked",
     [tidesdb.TDB_ERR_READONLY] = "database is read-only",
+    [tidesdb.TDB_ERR_BUSY] = "resource busy",
 }
 
 -- TidesDBError class
@@ -470,6 +523,7 @@ function tidesdb.default_config()
         unified_memtable_sync_mode = c_config.unified_memtable_sync_mode,
         unified_memtable_sync_interval_us = tonumber(c_config.unified_memtable_sync_interval_us),
         max_concurrent_flushes = c_config.max_concurrent_flushes,
+        finish_compactions_on_close = c_config.finish_compactions_on_close ~= 0,
     }
 end
 
@@ -555,6 +609,81 @@ function tidesdb.objstore_fs_create(root_dir)
         error(TidesDBError.new("failed to create filesystem object store connector"))
     end
     return store
+end
+
+-- Create an S3-compatible object store connector (positional form).
+-- Requires the TidesDB library to have been built with TIDESDB_WITH_S3=ON.
+-- opts: { endpoint, bucket, prefix, access_key, secret_key, region, use_ssl, use_path_style }
+function tidesdb.objstore_s3_create(opts)
+    opts = opts or {}
+    local ok, store = pcall(function()
+        return lib.tidesdb_objstore_s3_create(
+            opts.endpoint, opts.bucket, opts.prefix, opts.access_key,
+            opts.secret_key, opts.region,
+            (opts.use_ssl == nil or opts.use_ssl) and 1 or 0,
+            opts.use_path_style and 1 or 0)
+    end)
+    if not ok then
+        error(TidesDBError.new("S3 object store unavailable (library not built with TIDESDB_WITH_S3): " .. tostring(store)))
+    end
+    if store == nil then
+        error(TidesDBError.new("failed to create S3 object store connector"))
+    end
+    return store
+end
+
+-- Create an S3-compatible object store connector from a full configuration table,
+-- exposing TLS and multipart tuning. Requires TIDESDB_WITH_S3=ON.
+-- config: { endpoint, bucket, prefix, access_key, secret_key, region, use_ssl,
+--           use_path_style, tls_ca_path, tls_insecure_skip_verify,
+--           multipart_threshold, multipart_part_size }
+function tidesdb.objstore_s3_create_config(config)
+    config = config or {}
+    local c_config = ffi.new("tidesdb_objstore_s3_config_t")
+    c_config.endpoint = config.endpoint
+    c_config.bucket = config.bucket
+    c_config.prefix = config.prefix
+    c_config.access_key = config.access_key
+    c_config.secret_key = config.secret_key
+    c_config.region = config.region
+    c_config.use_ssl = (config.use_ssl == nil or config.use_ssl) and 1 or 0
+    c_config.use_path_style = config.use_path_style and 1 or 0
+    c_config.tls_ca_path = config.tls_ca_path
+    c_config.tls_insecure_skip_verify = config.tls_insecure_skip_verify and 1 or 0
+    c_config.multipart_threshold = config.multipart_threshold or 0
+    c_config.multipart_part_size = config.multipart_part_size or 0
+
+    local ok, store = pcall(function()
+        return lib.tidesdb_objstore_s3_create_config(c_config)
+    end)
+    if not ok then
+        error(TidesDBError.new("S3 object store unavailable (library not built with TIDESDB_WITH_S3): " .. tostring(store)))
+    end
+    if store == nil then
+        error(TidesDBError.new("failed to create S3 object store connector"))
+    end
+    return store
+end
+
+-- Initialize TidesDB with optional custom allocator functions.
+-- Calling any TidesDB operation initializes the library lazily, so this is only
+-- needed to install a custom allocator. Pass nil for any function to use the
+-- system default. Returns 0 on success, -1 if already initialized.
+function tidesdb.init(malloc_fn, calloc_fn, realloc_fn, free_fn)
+    return lib.tidesdb_init(malloc_fn, calloc_fn, realloc_fn, free_fn)
+end
+
+-- Finalize TidesDB and reset the allocator. Call after all TidesDB operations
+-- are complete; tidesdb.init() may then be called again.
+function tidesdb.finalize()
+    lib.tidesdb_finalize()
+end
+
+-- Raise this process's open-file ceiling toward `desired` descriptors. Call
+-- BEFORE opening a database. A value <= 0 just reports the current ceiling.
+-- Returns the open-file ceiling in effect after the attempt.
+function tidesdb.raise_open_file_limit(desired)
+    return tonumber(lib.tidesdb_raise_open_file_limit(desired or 0))
 end
 
 -- Convert Lua config to C struct
@@ -883,6 +1012,13 @@ function ColumnFamily:get_stats()
         level_tombstone_counts = level_tombstone_counts,
         max_sst_density = c_stats.max_sst_density,
         max_sst_density_level = c_stats.max_sst_density_level,
+        wal_bytes_written = tonumber(c_stats.wal_bytes_written),
+        flush_bytes_written = tonumber(c_stats.flush_bytes_written),
+        compaction_bytes_written = tonumber(c_stats.compaction_bytes_written),
+        compaction_bytes_read = tonumber(c_stats.compaction_bytes_read),
+        user_bytes_written = tonumber(c_stats.user_bytes_written),
+        flush_count = tonumber(c_stats.flush_count),
+        compaction_count = tonumber(c_stats.compaction_count),
     }
 
     lib.tidesdb_free_stats(stats_ptr[0])
@@ -1091,6 +1227,7 @@ function TidesDB.new(config)
     c_config.unified_memtable_sync_mode = config.unified_memtable_sync_mode or tidesdb.SyncMode.SYNC_INTERVAL
     c_config.unified_memtable_sync_interval_us = config.unified_memtable_sync_interval_us or 128000
     c_config.max_concurrent_flushes = config.max_concurrent_flushes or 0
+    c_config.finish_compactions_on_close = config.finish_compactions_on_close and 1 or 0
 
     -- Object store configuration
     if config.object_store then
@@ -1130,6 +1267,7 @@ function TidesDB.open(path, options)
         unified_memtable_sync_mode = options.unified_memtable_sync_mode,
         unified_memtable_sync_interval_us = options.unified_memtable_sync_interval_us,
         max_concurrent_flushes = options.max_concurrent_flushes,
+        finish_compactions_on_close = options.finish_compactions_on_close,
         object_store = options.object_store,
         object_store_config = options.object_store_config,
     }
@@ -1290,6 +1428,15 @@ function TidesDB:purge()
     check_result(result, "failed to purge database")
 end
 
+function TidesDB:cancel_background_work()
+    if self._closed then
+        error(TidesDBError.new("Database is closed"))
+    end
+
+    local result = lib.tidesdb_cancel_background_work(self._db)
+    check_result(result, "failed to cancel background work")
+end
+
 function TidesDB:get_db_stats()
     if self._closed then
         error(TidesDBError.new("Database is closed"))
@@ -1331,6 +1478,14 @@ function TidesDB:get_db_stats()
         total_uploads = tonumber(c_stats.total_uploads),
         total_upload_failures = tonumber(c_stats.total_upload_failures),
         replica_mode = c_stats.replica_mode ~= 0,
+        uwal_bytes_written = tonumber(c_stats.uwal_bytes_written),
+        wal_bytes_written = tonumber(c_stats.wal_bytes_written),
+        flush_bytes_written = tonumber(c_stats.flush_bytes_written),
+        compaction_bytes_written = tonumber(c_stats.compaction_bytes_written),
+        compaction_bytes_read = tonumber(c_stats.compaction_bytes_read),
+        user_bytes_written = tonumber(c_stats.user_bytes_written),
+        flush_count = tonumber(c_stats.flush_count),
+        compaction_count = tonumber(c_stats.compaction_count),
     }
 end
 
@@ -1427,6 +1582,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.7.0"
+tidesdb._VERSION = "0.7.1"
 
 return tidesdb
