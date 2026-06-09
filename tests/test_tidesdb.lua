@@ -1721,26 +1721,56 @@ function tests.test_db_stats_wa_fields()
 end
 
 function tests.test_init_finalize()
-    -- The library auto-initializes lazily, so finalize() then init() should
-    -- succeed and leave the library usable for subsequent operations.
-    tidesdb.finalize()
-    local rc = tidesdb.init(nil, nil, nil, nil)
-    assert_eq(rc, 0, "init after finalize should return 0 (freshly initialized)")
-    local rc2 = tidesdb.init(nil, nil, nil, nil)
-    assert_eq(rc2, -1, "second init should return -1 (already initialized)")
+    -- tidesdb.init installs custom allocator functions (malloc/calloc/realloc/free)
+    -- and must run before any other TidesDB call; passing nil keeps the system
+    -- allocators. As in the C API it is honored only as the first initialization
+    -- and returns -1 once the library is already initialized, because the
+    -- allocators cannot be swapped under a live library. init/finalize mutate
+    -- process-global state, so we must NOT call them in this shared-process suite
+    -- -- doing so would tear down the library and crash the next sibling test.
 
-    -- confirm the library still works after re-init
-    local path = "./test_db_init"
-    cleanup_db(path)
-    local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
-    db:create_column_family("c")
-    local cf = db:get_column_family("c")
-    local txn = db:begin_txn()
-    txn:put(cf, "k", "v")
-    txn:commit()
-    txn:free()
-    db:close()
-    cleanup_db(path)
+    -- The bindings must exist.
+    assert_true(type(tidesdb.init) == "function", "tidesdb.init should be a function")
+    assert_true(type(tidesdb.finalize) == "function", "tidesdb.finalize should be a function")
+
+    -- Exercise the real finalize -> init(custom allocators) -> use cycle in an
+    -- isolated child process so it cannot disturb other tests, and so the init
+    -- return-value contract can be asserted deterministically (ordering is fixed
+    -- here: finalize first, so the next init is the first one and succeeds).
+    local script = [[
+local tidesdb = require("tidesdb")
+tidesdb.finalize()
+-- nil keeps the system allocators; this is where a real caller would pass custom
+-- malloc/calloc/realloc/free. The first init after finalize installs them...
+assert(tidesdb.init(nil, nil, nil, nil) == 0, "first init after finalize should return 0")
+-- ...and a second init is rejected because allocators are already locked in.
+assert(tidesdb.init(nil, nil, nil, nil) == -1, "init on an already-initialized library should return -1")
+local path = "./test_db_init_child"
+os.execute("rm -rf " .. path)
+local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
+db:create_column_family("c")
+local cf = db:get_column_family("c")
+local txn = db:begin_txn()
+txn:put(cf, "k", "v")
+txn:commit()
+txn:free()
+db:close()
+os.execute("rm -rf " .. path)
+print("CHILD_OK")
+]]
+    local tmp = "./_init_finalize_child.lua"
+    local fh = assert(io.open(tmp, "w"))
+    fh:write(script)
+    fh:close()
+
+    -- Reuse the interpreter and environment the suite is already running under.
+    local interp = (arg and arg[-1]) or "luajit"
+    local p = assert(io.popen(interp .. " " .. tmp .. " 2>&1"))
+    local out = p:read("*a")
+    p:close()
+    os.execute("rm -f " .. tmp)
+    assert_true(out:find("CHILD_OK", 1, true) ~= nil,
+        "isolated init/finalize cycle should succeed, got:\n" .. tostring(out))
     print("PASS: test_init_finalize")
 end
 

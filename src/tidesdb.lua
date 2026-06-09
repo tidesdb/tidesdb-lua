@@ -1194,6 +1194,19 @@ end
 
 tidesdb.Transaction = Transaction
 
+-- A committed transaction synchronously invokes the column family's commit hook
+-- (a LuaJIT FFI callback) from inside tidesdb_txn_commit. LuaJIT cannot run an
+-- FFI callback that is reached from JIT-compiled code -- once the commit trace is
+-- hot it aborts with "PANIC: bad callback". Force the commit path to stay
+-- interpreted so the hook is always invoked from the interpreter. Guarded so the
+-- module still loads under a plain (non-JIT) Lua interpreter.
+do
+    local ok, jit = pcall(require, "jit")
+    if ok and jit and jit.off then
+        jit.off(Transaction.commit)
+    end
+end
+
 -- TidesDB class
 local TidesDB = {}
 TidesDB.__index = TidesDB
