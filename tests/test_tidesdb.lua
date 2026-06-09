@@ -1524,10 +1524,11 @@ function tests.test_max_concurrent_flushes()
     local path = "./test_db_max_flushes"
     cleanup_db(path)
 
-    -- default_config() should source from C, so max_concurrent_flushes should be non-zero
+    -- default_config() should source from C. max_concurrent_flushes defaults to 0,
+    -- which the engine resolves to TDB_DEFAULT_MAX_CONCURRENT_FLUSHES at open time.
     local defaults = tidesdb.default_config()
     assert_true(defaults.max_concurrent_flushes ~= nil, "max_concurrent_flushes should exist in default_config")
-    assert_true(defaults.max_concurrent_flushes > 0, "default max_concurrent_flushes should be > 0")
+    assert_true(defaults.max_concurrent_flushes >= 0, "default max_concurrent_flushes should be >= 0")
 
     -- Open with MaxConcurrentFlushes = 1; basic put + flush should work
     local db = tidesdb.TidesDB.open(path, {
@@ -1547,6 +1548,200 @@ function tests.test_max_concurrent_flushes()
     db:close()
     cleanup_db(path)
     print("PASS: test_max_concurrent_flushes")
+end
+
+function tests.test_error_busy_constant()
+    assert_eq(tidesdb.TDB_ERR_BUSY, -14, "TDB_ERR_BUSY should be -14")
+    print("PASS: test_error_busy_constant")
+end
+
+function tests.test_finish_compactions_on_close()
+    -- field should be present in default_config()
+    local defaults = tidesdb.default_config()
+    assert_true(defaults.finish_compactions_on_close ~= nil,
+        "finish_compactions_on_close should exist in default_config")
+
+    local path = "./test_db_finish_compactions"
+    cleanup_db(path)
+
+    -- open with finish_compactions_on_close = true and exercise basic write/flush/close
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+        finish_compactions_on_close = true,
+    })
+    db:create_column_family("fc_cf")
+    local cf = db:get_column_family("fc_cf")
+
+    local txn = db:begin_txn()
+    txn:put(cf, "k", "v")
+    txn:commit()
+    txn:free()
+    cf:flush_memtable()
+
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_finish_compactions_on_close")
+end
+
+function tests.test_raise_open_file_limit()
+    -- desired <= 0 just reports the current ceiling
+    local current = tidesdb.raise_open_file_limit(0)
+    assert_true(type(current) == "number", "raise_open_file_limit should return a number")
+    assert_true(current > 0, "current open-file ceiling should be > 0")
+
+    -- requesting a target returns the (possibly clamped) ceiling in effect afterward
+    local after = tidesdb.raise_open_file_limit(current)
+    assert_true(type(after) == "number", "raise_open_file_limit should return a number")
+    assert_true(after >= 0, "open-file ceiling should be >= 0")
+    print("PASS: test_raise_open_file_limit")
+end
+
+function tests.test_cancel_background_work()
+    local path = "./test_db_cancel_bg"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    db:create_column_family("cbw_cf")
+    local cf = db:get_column_family("cbw_cf")
+
+    -- write a few entries and flush so there is potential background work
+    for i = 1, 50 do
+        local txn = db:begin_txn()
+        txn:put(cf, "key" .. i, "value" .. i)
+        txn:commit()
+        txn:free()
+    end
+    cf:flush_memtable()
+
+    -- cancel background work db-wide (intended right before a fast shutdown)
+    db:cancel_background_work()
+
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_cancel_background_work")
+end
+
+function tests.test_objstore_s3_unavailable()
+    -- The bundled library is built without TIDESDB_WITH_S3, so the S3 connector
+    -- factories should raise a clear error rather than crash. (When built with S3
+    -- support these would instead attempt a real connection.)
+    assert_error(function()
+        tidesdb.objstore_s3_create({
+            endpoint = "localhost:9000",
+            bucket = "test",
+            access_key = "minioadmin",
+            secret_key = "minioadmin",
+            use_path_style = true,
+        })
+    end, "objstore_s3_create should error when S3 support is unavailable")
+
+    assert_error(function()
+        tidesdb.objstore_s3_create_config({
+            endpoint = "localhost:9000",
+            bucket = "test",
+            access_key = "minioadmin",
+            secret_key = "minioadmin",
+            use_path_style = true,
+        })
+    end, "objstore_s3_create_config should error when S3 support is unavailable")
+    print("PASS: test_objstore_s3_unavailable")
+end
+
+function tests.test_cf_stats_wa_fields()
+    local path = "./test_db_cf_wa"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    db:create_column_family("wa_cf")
+    local cf = db:get_column_family("wa_cf")
+
+    for i = 1, 20 do
+        local txn = db:begin_txn()
+        txn:put(cf, "key" .. i, "value" .. i)
+        txn:commit()
+        txn:free()
+    end
+    cf:flush_memtable()
+
+    local stats = cf:get_stats()
+    -- write-amplification counters (added in 0.7.1)
+    assert_true(stats.wal_bytes_written ~= nil, "wal_bytes_written should exist")
+    assert_true(stats.flush_bytes_written ~= nil, "flush_bytes_written should exist")
+    assert_true(stats.compaction_bytes_written ~= nil, "compaction_bytes_written should exist")
+    assert_true(stats.compaction_bytes_read ~= nil, "compaction_bytes_read should exist")
+    assert_true(stats.user_bytes_written ~= nil, "user_bytes_written should exist")
+    assert_true(stats.flush_count ~= nil, "flush_count should exist")
+    assert_true(stats.compaction_count ~= nil, "compaction_count should exist")
+    assert_true(stats.user_bytes_written > 0, "user_bytes_written should be > 0 after writes")
+
+    db:drop_column_family("wa_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_cf_stats_wa_fields")
+end
+
+function tests.test_db_stats_wa_fields()
+    local path = "./test_db_dbstats_wa"
+    cleanup_db(path)
+
+    local db = tidesdb.TidesDB.open(path, {
+        log_level = tidesdb.LogLevel.LOG_WARN,
+    })
+    db:create_column_family("wa_cf")
+    local cf = db:get_column_family("wa_cf")
+
+    for i = 1, 20 do
+        local txn = db:begin_txn()
+        txn:put(cf, "key" .. i, "value" .. i)
+        txn:commit()
+        txn:free()
+    end
+    cf:flush_memtable()
+
+    local db_stats = db:get_db_stats()
+    -- write-amplification counters (added in 0.7.1)
+    assert_true(db_stats.uwal_bytes_written ~= nil, "uwal_bytes_written should exist")
+    assert_true(db_stats.wal_bytes_written ~= nil, "wal_bytes_written should exist")
+    assert_true(db_stats.flush_bytes_written ~= nil, "flush_bytes_written should exist")
+    assert_true(db_stats.compaction_bytes_written ~= nil, "compaction_bytes_written should exist")
+    assert_true(db_stats.compaction_bytes_read ~= nil, "compaction_bytes_read should exist")
+    assert_true(db_stats.user_bytes_written ~= nil, "user_bytes_written should exist")
+    assert_true(db_stats.flush_count ~= nil, "flush_count should exist")
+    assert_true(db_stats.compaction_count ~= nil, "compaction_count should exist")
+    assert_true(db_stats.user_bytes_written > 0, "user_bytes_written should be > 0 after writes")
+
+    db:drop_column_family("wa_cf")
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_db_stats_wa_fields")
+end
+
+function tests.test_init_finalize()
+    -- The library auto-initializes lazily, so finalize() then init() should
+    -- succeed and leave the library usable for subsequent operations.
+    tidesdb.finalize()
+    local rc = tidesdb.init(nil, nil, nil, nil)
+    assert_eq(rc, 0, "init after finalize should return 0 (freshly initialized)")
+    local rc2 = tidesdb.init(nil, nil, nil, nil)
+    assert_eq(rc2, -1, "second init should return -1 (already initialized)")
+
+    -- confirm the library still works after re-init
+    local path = "./test_db_init"
+    cleanup_db(path)
+    local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
+    db:create_column_family("c")
+    local cf = db:get_column_family("c")
+    local txn = db:begin_txn()
+    txn:put(cf, "k", "v")
+    txn:commit()
+    txn:free()
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_init_finalize")
 end
 
 -- Run all tests
