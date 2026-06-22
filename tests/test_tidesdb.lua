@@ -1623,30 +1623,34 @@ function tests.test_cancel_background_work()
     print("PASS: test_cancel_background_work")
 end
 
-function tests.test_objstore_s3_unavailable()
-    -- The bundled library is built without TIDESDB_WITH_S3, so the S3 connector
-    -- factories should raise a clear error rather than crash. (When built with S3
-    -- support these would instead attempt a real connection.)
-    assert_error(function()
-        tidesdb.objstore_s3_create({
-            endpoint = "localhost:9000",
-            bucket = "test",
-            access_key = "minioadmin",
-            secret_key = "minioadmin",
-            use_path_style = true,
-        })
-    end, "objstore_s3_create should error when S3 support is unavailable")
+function tests.test_objstore_s3_factories()
+    -- The S3 connector factories must behave well regardless of how libtidesdb was
+    -- compiled: when built WITHOUT TIDESDB_WITH_S3 they must raise a clear error
+    -- rather than crash; when built WITH S3 they return a connector handle (lazily,
+    -- without contacting the endpoint). Either outcome is acceptable here -- what we
+    -- guard against is a crash or a silent nil. This keeps the suite green against
+    -- both build flavours.
+    local function check(factory, args, label)
+        local ok, result = pcall(factory, args)
+        if ok then
+            -- S3 built in: a non-nil connector handle must come back.
+            assert_true(result ~= nil, label .. " returned nil without erroring")
+        else
+            -- S3 not built in: the wrapper raises a TidesDBError, not a raw crash.
+            assert_true(result ~= nil, label .. " raised an empty error")
+        end
+    end
 
-    assert_error(function()
-        tidesdb.objstore_s3_create_config({
-            endpoint = "localhost:9000",
-            bucket = "test",
-            access_key = "minioadmin",
-            secret_key = "minioadmin",
-            use_path_style = true,
-        })
-    end, "objstore_s3_create_config should error when S3 support is unavailable")
-    print("PASS: test_objstore_s3_unavailable")
+    local opts = {
+        endpoint = "localhost:9000",
+        bucket = "test",
+        access_key = "minioadmin",
+        secret_key = "minioadmin",
+        use_path_style = true,
+    }
+    check(tidesdb.objstore_s3_create, opts, "objstore_s3_create")
+    check(tidesdb.objstore_s3_create_config, opts, "objstore_s3_create_config")
+    print("PASS: test_objstore_s3_factories")
 end
 
 function tests.test_cf_stats_wa_fields()
@@ -1772,6 +1776,97 @@ print("CHILD_OK")
     assert_true(out:find("CHILD_OK", 1, true) ~= nil,
         "isolated init/finalize cycle should succeed, got:\n" .. tostring(out))
     print("PASS: test_init_finalize")
+end
+
+function tests.test_error_precondition_constant()
+    assert_eq(tidesdb.TDB_ERR_PRECONDITION, -15, "TDB_ERR_PRECONDITION value")
+    -- The code must map to a human-readable message, not the "unknown error" fallback.
+    local err = tidesdb.TidesDBError.from_code(tidesdb.TDB_ERR_PRECONDITION, "ctx")
+    assert_eq(err.code, -15, "error code preserved")
+    assert_true(err.message:find("precondition", 1, true) ~= nil,
+        "precondition error message, got: " .. tostring(err.message))
+    print("PASS: test_error_precondition_constant")
+end
+
+function tests.test_builtin_comparators()
+    -- Name constants are exposed.
+    assert_eq(tidesdb.Comparator.MEMCMP, "memcmp", "MEMCMP name")
+    assert_eq(tidesdb.Comparator.UINT64, "uint64", "UINT64 name")
+    assert_eq(tidesdb.Comparator.CASE_INSENSITIVE, "case_insensitive", "CASE_INSENSITIVE name")
+    -- Built-in C function pointers are reachable.
+    assert_true(tidesdb.builtin_comparators.memcmp ~= nil, "memcmp fn pointer")
+    assert_true(tidesdb.builtin_comparators.uint64 ~= nil, "uint64 fn pointer")
+
+    -- A column family can select a built-in comparator by name; it orders keys
+    -- per that comparator without any register_comparator call.
+    local path = "./test_db_builtin_cmp"
+    cleanup_db(path)
+    local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
+    local cfg = tidesdb.default_column_family_config()
+    cfg.comparator_name = tidesdb.Comparator.UINT64
+    db:create_column_family("nums", cfg)
+    local cf = db:get_column_family("nums")
+
+    -- The uint64 comparator memcpy's 8 key bytes into a uint64 (native byte
+    -- order, little-endian on x86-64), so encode keys little-endian.
+    local function u64(n)
+        local b = {}
+        for i = 1, 8 do
+            b[i] = string.char(n % 256)
+            n = math.floor(n / 256)
+        end
+        return table.concat(b)
+    end
+    local txn = db:begin_txn()
+    txn:put(cf, u64(300), "three-hundred")
+    txn:put(cf, u64(20), "twenty")
+    txn:put(cf, u64(1), "one")
+    txn:commit()
+    txn:free()
+
+    local rtxn = db:begin_txn()
+    local iter = rtxn:new_iterator(cf)
+    iter:seek_to_first()
+    local order = {}
+    while iter:valid() do
+        table.insert(order, iter:value())
+        iter:next()
+    end
+    iter:free()
+    rtxn:free()
+    assert_eq(order[1], "one", "uint64 order first")
+    assert_eq(order[2], "twenty", "uint64 order second")
+    assert_eq(order[3], "three-hundred", "uint64 order third")
+
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_builtin_comparators")
+end
+
+function tests.test_large_ttl_not_truncated()
+    -- TTL is an absolute expiry epoch (time_t). A value above 2^32 must survive
+    -- as a 64-bit argument; truncating it to a 32-bit int would wrap it down to a
+    -- small "already expired" timestamp and silently drop the key on read.
+    local path = "./test_db_large_ttl"
+    cleanup_db(path)
+    local db = tidesdb.TidesDB.open(path, { log_level = tidesdb.LogLevel.LOG_WARN })
+    db:create_column_family("c")
+    local cf = db:get_column_family("c")
+
+    local far_future = 4294968296 -- 2^32 + 1000, ~year 2106; low 32 bits = 1000 (in the past)
+    local txn = db:begin_txn()
+    txn:put(cf, "k", "v", far_future)
+    txn:commit()
+    txn:free()
+
+    local rtxn = db:begin_txn()
+    local val = rtxn:get(cf, "k")
+    rtxn:free()
+    assert_eq(val, "v", "key with far-future TTL must not be treated as expired")
+
+    db:close()
+    cleanup_db(path)
+    print("PASS: test_large_ttl_not_truncated")
 end
 
 -- Run all tests

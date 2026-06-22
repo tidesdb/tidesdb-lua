@@ -1,8 +1,8 @@
 package = "tidesdb"
-version = "0.7.1-1"
+version = "0.7.2-1"
 source = {
    url = "git://github.com/tidesdb/tidesdb-lua.git",
-   tag = "v0.7.1"
+   tag = "v0.7.2"
 }
 description = {
    summary = "Official Lua bindings for TidesDB - A high-performance embedded key-value storage engine",
