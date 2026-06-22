@@ -40,6 +40,7 @@ ffi.cdef[[
     static const int TDB_ERR_LOCKED = -12;
     static const int TDB_ERR_READONLY = -13;
     static const int TDB_ERR_BUSY = -14;
+    static const int TDB_ERR_PRECONDITION = -15;
 
     // Structures
     static const int TDB_MAX_CF_NAME_LEN = 128;
@@ -227,7 +228,7 @@ ffi.cdef[[
     // Transaction functions
     int tidesdb_txn_begin(void* db, void** txn);
     int tidesdb_txn_begin_with_isolation(void* db, int isolation, void** txn);
-    int tidesdb_txn_put(void* txn, void* cf, const uint8_t* key, size_t key_len, const uint8_t* value, size_t value_len, int ttl);
+    int tidesdb_txn_put(void* txn, void* cf, const uint8_t* key, size_t key_len, const uint8_t* value, size_t value_len, int64_t ttl);
     int tidesdb_txn_get(void* txn, void* cf, const uint8_t* key, size_t key_len, uint8_t** value, size_t* value_len);
     int tidesdb_txn_delete(void* txn, void* cf, const uint8_t* key, size_t key_len);
     int tidesdb_txn_single_delete(void* txn, void* cf, const uint8_t* key, size_t key_len);
@@ -310,6 +311,8 @@ ffi.cdef[[
         uint64_t total_uploads;
         uint64_t total_upload_failures;
         int replica_mode;
+        uint64_t primary_epoch;
+        uint64_t seen_epoch;
         uint64_t uwal_bytes_written;
         uint64_t wal_bytes_written;
         uint64_t flush_bytes_written;
@@ -415,6 +418,7 @@ tidesdb.TDB_ERR_UNKNOWN = -11
 tidesdb.TDB_ERR_LOCKED = -12
 tidesdb.TDB_ERR_READONLY = -13
 tidesdb.TDB_ERR_BUSY = -14
+tidesdb.TDB_ERR_PRECONDITION = -15
 
 -- Compression algorithms
 tidesdb.CompressionAlgorithm = {
@@ -451,6 +455,30 @@ tidesdb.IsolationLevel = {
     SERIALIZABLE = 4,
 }
 
+-- Built-in comparator names. These comparators are registered automatically on
+-- every database at open time, so a column family can select one simply by
+-- setting `comparator_name` in its config -- no register_comparator call needed.
+tidesdb.Comparator = {
+    MEMCMP = "memcmp",
+    LEXICOGRAPHIC = "lexicographic",
+    UINT64 = "uint64",
+    INT64 = "int64",
+    REVERSE = "reverse",
+    CASE_INSENSITIVE = "case_insensitive",
+}
+
+-- Built-in comparator C function pointers. Exposed for callers that want to
+-- register a built-in implementation under a custom name via
+-- TidesDB:register_comparator, or invoke it directly.
+tidesdb.builtin_comparators = {
+    memcmp = lib.tidesdb_comparator_memcmp,
+    lexicographic = lib.tidesdb_comparator_lexicographic,
+    uint64 = lib.tidesdb_comparator_uint64,
+    int64 = lib.tidesdb_comparator_int64,
+    reverse_memcmp = lib.tidesdb_comparator_reverse_memcmp,
+    case_insensitive = lib.tidesdb_comparator_case_insensitive,
+}
+
 -- Error messages
 local error_messages = {
     [tidesdb.TDB_ERR_MEMORY] = "memory allocation failed",
@@ -467,6 +495,7 @@ local error_messages = {
     [tidesdb.TDB_ERR_LOCKED] = "database is locked",
     [tidesdb.TDB_ERR_READONLY] = "database is read-only",
     [tidesdb.TDB_ERR_BUSY] = "resource busy",
+    [tidesdb.TDB_ERR_PRECONDITION] = "precondition failed",
 }
 
 -- TidesDBError class
@@ -973,6 +1002,8 @@ function ColumnFamily:get_stats()
             tombstone_density_trigger = c_cfg.tombstone_density_trigger,
             tombstone_density_min_entries = tonumber(c_cfg.tombstone_density_min_entries),
             use_btree = c_cfg.use_btree ~= 0,
+            object_lazy_compaction = c_cfg.object_lazy_compaction ~= 0,
+            object_prefetch_compaction = c_cfg.object_prefetch_compaction ~= 0,
         }
     end
 
@@ -1068,7 +1099,11 @@ function Transaction:get(cf, key)
     check_result(result, "failed to get value")
 
     local value = ffi.string(value_ptr[0], value_size[0])
-    ffi.C.free(value_ptr[0])
+    -- The value buffer is allocated by TidesDB's allocator (tdb_malloc), so it
+    -- must be released through tidesdb_free, not libc free. They coincide for the
+    -- default allocator but differ once a custom allocator is installed via
+    -- tidesdb.init (and may bind to different CRT heaps on Windows).
+    lib.tidesdb_free(value_ptr[0])
     return value
 end
 
@@ -1375,15 +1410,18 @@ function TidesDB:list_column_families()
         return {}
     end
 
+    -- Both the array and each name string are allocated by TidesDB's allocator
+    -- (malloc/tdb_strdup), so release them through tidesdb_free rather than libc
+    -- free so a custom allocator installed via tidesdb.init frees on its own heap.
     local names = {}
     for i = 0, count[0] - 1 do
         local str_ptr = names_ptr[0][i]
         if str_ptr ~= nil then
             table.insert(names, ffi.string(str_ptr))
-            ffi.C.free(str_ptr)
+            lib.tidesdb_free(str_ptr)
         end
     end
-    ffi.C.free(names_ptr[0])
+    lib.tidesdb_free(names_ptr[0])
 
     return names
 end
@@ -1491,6 +1529,8 @@ function TidesDB:get_db_stats()
         total_uploads = tonumber(c_stats.total_uploads),
         total_upload_failures = tonumber(c_stats.total_upload_failures),
         replica_mode = c_stats.replica_mode ~= 0,
+        primary_epoch = tonumber(c_stats.primary_epoch),
+        seen_epoch = tonumber(c_stats.seen_epoch),
         uwal_bytes_written = tonumber(c_stats.uwal_bytes_written),
         wal_bytes_written = tonumber(c_stats.wal_bytes_written),
         flush_bytes_written = tonumber(c_stats.flush_bytes_written),
@@ -1595,6 +1635,6 @@ function tidesdb.save_config_to_ini(ini_file, section_name, config)
 end
 
 -- Version
-tidesdb._VERSION = "0.7.1"
+tidesdb._VERSION = "0.7.2"
 
 return tidesdb
